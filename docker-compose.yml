@@ -48,7 +48,7 @@ services:
     container_name: ajaia_web
     restart: unless-stopped
     ports:
-      - "${PORT:-5588}:8000"
+      - "${PORT:-80}:8000"
     command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - ./backend:/app/backend # Live reload development bind mount
@@ -60,7 +60,7 @@ services:
       - MINIO_SECRET_KEY=minioadminpassword
       - MINIO_BUCKET=ajaia-documents
       - MINIO_SECURE=false
-      - CORS_ORIGINS=http://localhost:5588,http://localhost:8000,http://127.0.0.1:5588,http://127.0.0.1:8000
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
     depends_on:
       db:
         condition: service_healthy

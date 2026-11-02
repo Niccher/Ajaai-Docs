@@ -105,7 +105,7 @@ The relational schema is normalized with foreign key constraints and cascade rul
    - Built-in `HEALTHCHECK` probing `/api/v1/health` ensures container orchestration detects unresponsiveness.
 
 5. **Configurable CORS:**
-   - Dynamic CORS origin resolution via `CORS_ORIGINS` environment variable (defaults to `http://localhost:5588,http://localhost:8000,http://127.0.0.1:5588,http://127.0.0.1:8000,http://testserver`).
+   - Dynamic CORS origin resolution via `CORS_ORIGINS` environment variable (defaults to `*` for seamless GCP external IP / domain access, or restricted comma-separated list e.g. `http://localhost,http://localhost:80,http://localhost:8000`).
 
 ---
 

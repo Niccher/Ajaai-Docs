@@ -12,9 +12,9 @@
 
 - **Google Drive Folder:** `[PASTE GOOGLE DRIVE FOLDER LINK HERE]`  
   *(Contains: full source archive `.zip`, MP4 walkthrough video, database schema export, and documentation artifacts)*
-- **Live Deployment URL:** `http://<GCP_EXTERNAL_IP>:5588`  
-  *(Deployed on Google Cloud Compute Engine instance via Docker Compose / `scripts/deploy.sh`)*
-- **Interactive API Documentation:** `http://<GCP_EXTERNAL_IP>:5588/docs`  
+- **Live Deployment URL:** `http://<GCP_EXTERNAL_IP>`  
+  *(Deployed on Google Cloud Compute Engine instance via Docker Compose / `scripts/deploy.sh` on standard HTTP port 80)*
+- **Interactive API Documentation:** `http://<GCP_EXTERNAL_IP>/docs`  
   *(Features built-in Swagger "Authorize" button to test with `alice@ajaia.test` or `bob@ajaia.test`)*
 - **MinIO Object Storage Console:** `http://<GCP_EXTERNAL_IP>:9001`  
   - **Console Username:** `minioadmin`  
@@ -48,7 +48,7 @@ chmod +x scripts/deploy.sh
 ```bash
 docker compose up -d --build
 ```
-Access the application at `http://localhost:5588`.
+Access the application at `http://localhost` (or `http://localhost:8000` if `PORT=8000`).
 
 ---
 

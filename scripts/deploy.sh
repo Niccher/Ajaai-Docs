@@ -7,8 +7,8 @@
 #         PORT=8000 bash scripts/deploy.sh
 #
 # Production Standard Ports:
-#   - Web App & Editor  : Port 5588 (or $PORT)
-#   - Swagger API Docs  : Port 5588/docs
+#   - Web App & Editor  : Port 80 (standard HTTP, or $PORT)
+#   - Swagger API Docs  : Port 80/docs
 #   - MinIO S3 API      : Port 9000
 #   - MinIO Console     : Port 9001
 #   - PostgreSQL 16 DB  : Port 5432
@@ -72,7 +72,7 @@ section() {
 
 # ── 1. Detect Host IP & Port Assignment ───────────────────────
 section "1. Network & Port Detection"
-TARGET_PORT="${PORT:-5588}"
+TARGET_PORT="${PORT:-80}"
 HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
 log "Configured Web Port: ${TARGET_PORT}"
 log "Detected Host IP:    ${HOST_IP}"

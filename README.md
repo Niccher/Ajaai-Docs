@@ -40,7 +40,7 @@ A lightweight, production-grade collaborative document editor inspired by Google
 
 5. **API Contract & Interactive Swagger Authentication:**
    - Versioned API under `/api/v1/...`.
-   - Swagger OpenAPI UI at `http://localhost:5588/docs` featuring the green **Authorize** button powered by `APIKeyHeader(name="X-User-Email")`.
+   - Swagger OpenAPI UI at `http://localhost/docs` (or `:8000/docs`) featuring the green **Authorize** button powered by `APIKeyHeader(name="X-User-Email")`.
    - Strict `401 Unauthorized` responses on missing or unseeded personas.
 
 ---
@@ -51,24 +51,80 @@ The easiest way to run the entire stack (FastAPI web app, PostgreSQL database, a
 
 ```bash
 # 1. Clone the repository
-git clone <repo-url>
-cd Ajaia
+git clone https://github.com/Niccher/Ajaai-Docs.git
+cd Ajaai-Docs
 
 # 2. Run the automated one-click deployment pipeline (or docker compose up -d --build)
 bash scripts/deploy.sh
 ```
 
-That's it! All 3 containers automatically boot, verify dependencies, run migrations, seed data, and execute preflight checks:
-- **Web App & Editor:** [http://localhost:5588](http://localhost:5588) *(Configurable via `PORT` env var, defaults to 5588)*
-- **Interactive Swagger Docs:** [http://localhost:5588/docs](http://localhost:5588/docs)
-- **Service Healthcheck:** [http://localhost:5588/api/v1/health](http://localhost:5588/api/v1/health)
+All 3 containers automatically boot, verify dependencies, run Alembic migrations, seed data, and execute preflight checks:
+- **Web App & Editor:** [http://localhost](http://localhost) *(Standard HTTP port 80; configurable via `PORT` env var e.g. `PORT=8000 bash scripts/deploy.sh`)*
+- **Interactive Swagger Docs:** [http://localhost/docs](http://localhost/docs)
+- **Service Healthcheck:** [http://localhost/api/v1/health](http://localhost/api/v1/health)
 - **MinIO S3 Console:** [http://localhost:9001](http://localhost:9001) *(User: `minioadmin`, Pass: `minioadminpassword`)*
+
+---
+
+## ☁️ Deploying on Google Cloud Platform (GCP Compute Engine)
+
+Follow this complete step-by-step guide to launch this repository on a fresh GCP VM:
+
+### 1. Provision a GCP Compute Engine VM
+- **Machine Configuration:** `e2-medium` (2 vCPU, 4GB RAM) or `e2-standard-2` in your preferred GCP region.
+- **Boot Disk:** Ubuntu 22.04 LTS (x86/64, 20GB standard persistent disk).
+- **Firewall:** Check both **"Allow HTTP traffic"** (Port 80) and **"Allow HTTPS traffic"** (Port 443).
+- *(Optional - MinIO Console Access):* Under **VPC Network → Firewall**, create a firewall rule allowing ingress on TCP port `9001` with target tag `allow-minio` to access the MinIO console from your browser.
+
+### 2. Connect via SSH
+Connect via the GCP Console **SSH** button or Google Cloud SDK:
+```bash
+gcloud compute ssh <INSTANCE_NAME> --zone=<ZONE>
+```
+
+### 3. Install Git, Docker & Docker Compose (Single Script)
+Run the following commands on the remote VM:
+```bash
+# Update package index and install git & curl
+sudo apt-get update && sudo apt-get install -y git curl
+
+# Install official Docker engine
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+# Install Docker Compose plugin
+sudo apt-get install -y docker-compose-plugin
+
+# Grant your non-root user docker permissions
+sudo usermod -aG docker $USER
+
+# Apply group changes immediately (or log out and log back in)
+newgrp docker
+```
+
+### 4. Clone & Deploy the Platform
+```bash
+# Clone the repository
+git clone https://github.com/Niccher/Ajaai-Docs.git
+cd Ajaai-Docs
+
+# Launch the zero-friction deployment pipeline
+chmod +x scripts/deploy.sh
+./scripts/deploy.sh
+```
+
+### 5. Access Live Endpoints
+Open your browser and navigate to your VM's External IP:
+- **Web App:** `http://<GCP_EXTERNAL_IP>` (no port needed; binds to standard HTTP port 80)
+- **Interactive Swagger Docs:** `http://<GCP_EXTERNAL_IP>/docs`
+- **Healthcheck:** `http://<GCP_EXTERNAL_IP>/api/v1/health`
+- **MinIO S3 Console:** `http://<GCP_EXTERNAL_IP>:9001`
 
 ---
 
 ## 🔐 Swagger UI & API Authentication
 
-When testing the interactive Swagger documentation at [http://localhost:5588/docs](http://localhost:5588/docs):
+When testing the interactive Swagger documentation at [http://localhost/docs](http://localhost/docs) (or `http://<GCP_EXTERNAL_IP>/docs`):
 
 1. Click the green **Authorize** button at the top-right.
 2. In the `Value` field for **APIKeyHeader (apiKey)**, enter one of the test personas:
@@ -95,10 +151,10 @@ pip install -r requirements.txt
 # 3. Set SQLite fallback (or point to local Postgres)
 export DATABASE_URL="sqlite:///./ajaia_docs.db"
 
-# 4. Start the server
-uvicorn backend.main:app --reload --port 5588
+# 4. Start the server (defaults to port 8000 in standalone dev)
+uvicorn backend.main:app --reload --port 8000
 ```
-Open [http://localhost:5588](http://localhost:5588) in your browser.
+Open [http://localhost:8000](http://localhost:8000) in your browser.
 
 ---
 
@@ -139,8 +195,8 @@ This project is tailored for a rapid, friction-free take-home evaluation. The fo
 ## 📂 Project Architecture
 
 ```
-Ajaia/
-├── docker-compose.yml       # Orchestrates Web (5588), PostgreSQL 16 (5432), and MinIO (9000/9001)
+Ajaai-Docs/
+├── docker-compose.yml       # Orchestrates Web (80), PostgreSQL 16 (5432), and MinIO (9000/9001)
 ├── Dockerfile               # Python 3.11-slim container with multi-stage layer caching
 ├── requirements.txt         # Pinned production dependencies (FastAPI, SQLAlchemy, nh3, MinIO)
 ├── requirements-dev.txt     # Test dependencies (pytest, httpx)

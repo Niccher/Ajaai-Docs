@@ -104,7 +104,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 cors_origins_raw = os.getenv(
     "CORS_ORIGINS",
-    "http://localhost:5588,http://localhost:8000,http://127.0.0.1:5588,http://127.0.0.1:8000,http://testserver"
+    "*"
 )
 allowed_origins = (
     ["*"]
