@@ -120,7 +120,7 @@ def health_check(db: Session = Depends(get_db)):
     """Health check reporting API, DB, and MinIO status."""
     db_ok = True
     try:
-        db.execute(sqlalchemy.text("SELECT 1"))
+        db.execute(text("SELECT 1"))
     except Exception:
         db_ok = False
 

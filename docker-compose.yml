@@ -18,7 +18,7 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    image: cgr.dev/chainguard/minio:latest
     container_name: ajaia_minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -30,11 +30,6 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
 
   web:
     build:
@@ -43,7 +38,7 @@ services:
     container_name: ajaia_web
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${PORT:-5588}:8000"
     environment:
       - DATABASE_URL=postgresql://postgres:postgrespassword@db:5432/ajaia_docs
       - MINIO_ENDPOINT=minio:9000
@@ -55,7 +50,7 @@ services:
       db:
         condition: service_healthy
       minio:
-        condition: service_healthy
+        condition: service_started
 
 volumes:
   postgres_data:

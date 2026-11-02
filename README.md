@@ -54,8 +54,8 @@ docker compose up -d --build
 ```
 
 That's it! All 3 containers will automatically boot and perform healthchecks:
-- **Web App & Editor:** [http://localhost:8000](http://localhost:8000)
-- **Interactive Swagger Docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Web App & Editor:** [http://localhost:5588](http://localhost:5588) *(Configurable via `PORT` env var, defaults to 5588)*
+- **Interactive Swagger Docs:** [http://localhost:5588/docs](http://localhost:5588/docs)
 - **MinIO S3 Console:** [http://localhost:9001](http://localhost:9001) *(User: `minioadmin`, Pass: `minioadminpassword`)*
 
 ---
