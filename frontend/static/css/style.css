@@ -1,0 +1,111 @@
+/* Inter font and base typography */
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: #202124;
+  background-color: #f8f9fa;
+  min-height: 100vh;
+}
+
+/* Document Title Input (Google Docs style) */
+.doc-title-input {
+  max-width: 280px;
+  border: 1px solid transparent;
+  background: transparent;
+  font-size: 1rem;
+  padding: 0.25rem 0.5rem;
+  transition: all 0.15s ease-in-out;
+}
+
+.doc-title-input:hover {
+  border-color: #dadce0;
+  background-color: #fff;
+}
+
+.doc-title-input:focus {
+  border-color: #1a73e8;
+  background-color: #fff;
+  box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+}
+
+/* Dropzone Box */
+.border-dashed {
+  border: 2px dashed #b9bec5;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.border-dashed:hover, .border-dashed.dragover {
+  border-color: #0d6efd;
+  background-color: #eef5ff !important;
+}
+
+/* Document Cards */
+.doc-card {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.doc-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08) !important;
+}
+
+.doc-icon-preview {
+  height: 90px;
+  background: #f1f3f4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 8px;
+}
+
+/* Editor Sheet (Google Docs "Paper" canvas) */
+.editor-container {
+  max-width: 860px;
+  margin-bottom: 3rem;
+}
+
+#quillToolbar {
+  position: sticky;
+  top: 57px;
+  z-index: 100;
+  border-color: #dadce0 !important;
+}
+
+.editor-page {
+  min-height: 800px;
+  padding: 2.5rem 3.5rem;
+  font-size: 1.05rem;
+  line-height: 1.6;
+  border-color: #dadce0 !important;
+}
+
+/* Remove default Quill border inside the page */
+.ql-container.ql-snow {
+  border: none !important;
+}
+
+.ql-editor {
+  padding: 0 !important;
+  min-height: 750px;
+  outline: none;
+}
+
+.ql-editor p {
+  margin-bottom: 0.85rem;
+}
+
+.ql-editor h1, .ql-editor h2, .ql-editor h3 {
+  color: #202124;
+  font-weight: 700;
+  margin-top: 1.25rem;
+  margin-bottom: 0.75rem;
+}
+
+/* Toast alert customization */
+.toast {
+  border-radius: 8px;
+}

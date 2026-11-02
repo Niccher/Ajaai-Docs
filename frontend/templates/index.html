@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ajaia Docs - Collaborative Document Editor</title>
+  
+  <!-- Bootstrap 5.3 & Bootstrap Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  
+  <!-- Quill.js Snow Theme -->
+  <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet">
+  
+  <!-- Google Fonts (Inter) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Custom Styles -->
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="bg-light">
+
+  <!-- ======================================================== -->
+  <!-- TOP NAVIGATION BAR -->
+  <!-- ======================================================== -->
+  <nav class="navbar navbar-expand-lg navbar-white bg-white border-bottom sticky-top py-2 px-3 shadow-sm">
+    <div class="container-fluid px-0">
+      
+      <!-- Brand & Document Title Area -->
+      <div class="d-flex align-items-center gap-3">
+        <a class="navbar-brand d-flex align-items-center gap-2 m-0 text-primary fw-bold" href="#" id="brandLink">
+          <i class="bi bi-file-earmark-text-fill fs-3 text-primary"></i>
+          <span class="fs-5 tracking-tight text-dark">Ajaia<span class="text-primary">Docs</span></span>
+        </a>
+
+        <!-- Document Rename / Status (Visible when editor is open) -->
+        <div id="navDocControls" class="d-none d-flex align-items-center gap-2">
+          <span class="text-muted">/</span>
+          <input type="text" id="docTitleInput" class="form-control form-control-sm doc-title-input fw-semibold" value="Untitled Document" placeholder="Document Title">
+          <span id="saveStatus" class="badge rounded-pill bg-light text-muted border px-2 py-1">
+            <i class="bi bi-cloud-check text-success me-1"></i> Saved
+          </span>
+          <span id="permissionBadge" class="badge bg-secondary-subtle text-secondary-emphasis">Owner</span>
+        </div>
+      </div>
+
+      <!-- Right Action Items -->
+      <div class="d-flex align-items-center gap-2 ms-auto">
+        <!-- Share Button (Visible when in editor) -->
+        <button id="btnOpenShare" class="btn btn-primary btn-sm d-none align-items-center gap-1 shadow-sm px-3" data-bs-toggle="modal" data-bs-target="#shareModal">
+          <i class="bi bi-person-plus-fill"></i> Share
+        </button>
+
+        <!-- Persona Switcher Dropdown -->
+        <div class="dropdown">
+          <button class="btn btn-outline-secondary btn-sm dropdown-toggle d-flex align-items-center gap-2" type="button" id="personaDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="bi bi-person-circle fs-6"></i>
+            <span id="activePersonaName">Alice Johnson</span>
+            <span class="badge bg-primary-subtle text-primary" id="activePersonaBadge">Owner</span>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end shadow-sm" aria-labelledby="personaDropdown" id="personaList">
+            <li><h6 class="dropdown-header">Switch Test Persona</h6></li>
+            <!-- Populated dynamically via /api/v1/users -->
+          </ul>
+        </div>
+      </div>
+
+    </div>
+  </nav>
+
+  <!-- ======================================================== -->
+  <!-- MAIN CONTAINER -->
+  <!-- ======================================================== -->
+  <main class="container-fluid py-4 px-md-4">
+    
+    <!-- ---------------------------------------------------- -->
+    <!-- VIEW 1: DASHBOARD / DOCUMENT LIST -->
+    <!-- ---------------------------------------------------- -->
+    <div id="dashboardView">
+      <div class="row mb-4 align-items-center">
+        <div class="col-md-6">
+          <h3 class="fw-bold text-dark m-0">Documents</h3>
+          <p class="text-muted small mb-0">Create, import, or collaborate on team documents.</p>
+        </div>
+        <div class="col-md-6 text-md-end mt-3 mt-md-0 d-flex gap-2 justify-content-md-end">
+          <button class="btn btn-primary d-flex align-items-center gap-1 shadow-sm" id="btnCreateDoc">
+            <i class="bi bi-plus-lg"></i> New Document
+          </button>
+          <button class="btn btn-outline-primary d-flex align-items-center gap-1 shadow-sm" data-bs-toggle="modal" data-bs-target="#uploadModal">
+            <i class="bi bi-cloud-arrow-up"></i> Import (.md, .txt)
+          </button>
+        </div>
+      </div>
+
+      <!-- Quick Upload Banner / Drag-and-drop dropzone -->
+      <div class="card border-dashed mb-4 bg-white p-3 text-center dropzone-box" id="quickDropzone">
+        <div class="card-body py-3">
+          <i class="bi bi-file-earmark-arrow-up text-primary fs-2"></i>
+          <h6 class="fw-semibold mt-2 mb-1">Drag & Drop a .md or .txt file here to import</h6>
+          <p class="text-muted small mb-0">Files are uploaded to MinIO S3 and converted to editable rich-text</p>
+          <input type="file" id="dragFileInput" class="d-none" accept=".md,.txt">
+        </div>
+      </div>
+
+      <!-- Document Tabs (My Documents vs Shared with Me) -->
+      <ul class="nav nav-pills mb-3 gap-2" id="docTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active px-4 py-2" id="tab-owned" data-bs-toggle="pill" data-bs-target="#content-owned" type="button" role="tab">
+            <i class="bi bi-folder2-open me-1"></i> My Documents <span class="badge bg-secondary ms-1" id="badgeOwnedCount">0</span>
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link px-4 py-2" id="tab-shared" data-bs-toggle="pill" data-bs-target="#content-shared" type="button" role="tab">
+            <i class="bi bi-people me-1"></i> Shared with Me <span class="badge bg-secondary ms-1" id="badgeSharedCount">0</span>
+          </button>
+        </li>
+      </ul>
+
+      <div class="tab-content" id="docTabContent">
+        <!-- Owned Documents List -->
+        <div class="tab-pane fade show active" id="content-owned" role="tabpanel">
+          <div class="row g-3" id="ownedDocsGrid">
+            <div class="col-12 text-center py-5 text-muted">
+              <div class="spinner-border spinner-border-sm text-primary" role="status"></div> Loading documents...
+            </div>
+          </div>
+        </div>
+
+        <!-- Shared Documents List -->
+        <div class="tab-pane fade" id="content-shared" role="tabpanel">
+          <div class="row g-3" id="sharedDocsGrid">
+            <div class="col-12 text-center py-5 text-muted">No shared documents.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------------------------------------------------- -->
+    <!-- VIEW 2: EDITOR VIEW -->
+    <!-- ---------------------------------------------------- -->
+    <div id="editorView" class="d-none">
+      
+      <!-- Editor Subheader -->
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <button class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1" id="btnBackToDashboard">
+          <i class="bi bi-arrow-left"></i> Back to Documents
+        </button>
+        <div class="d-flex align-items-center gap-2">
+          <span id="docMetaInfo" class="small text-muted"></span>
+          <button id="btnDownloadRaw" class="btn btn-sm btn-outline-info d-none align-items-center gap-1" title="Download original uploaded file from MinIO">
+            <i class="bi bi-download"></i> Original File
+          </button>
+          <button id="btnDeleteDoc" class="btn btn-sm btn-outline-danger d-none align-items-center gap-1" title="Delete document">
+            <i class="bi bi-trash"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Editor Card Container (Paper Look) -->
+      <div class="editor-container mx-auto">
+        <!-- Quill Toolbar will mount here -->
+        <div id="quillToolbar" class="bg-white rounded-top border">
+          <span class="ql-formats">
+            <select class="ql-header">
+              <option value="1">Heading 1</option>
+              <option value="2">Heading 2</option>
+              <option value="3">Heading 3</option>
+              <option selected>Normal</option>
+            </select>
+          </span>
+          <span class="ql-formats">
+            <button class="ql-bold"></button>
+            <button class="ql-italic"></button>
+            <button class="ql-underline"></button>
+            <button class="ql-strike"></button>
+          </span>
+          <span class="ql-formats">
+            <button class="ql-list" value="ordered"></button>
+            <button class="ql-list" value="bullet"></button>
+          </span>
+          <span class="ql-formats">
+            <button class="ql-blockquote"></button>
+            <button class="ql-code-block"></button>
+          </span>
+          <span class="ql-formats">
+            <button class="ql-clean"></button>
+          </span>
+        </div>
+        
+        <!-- Quill Editor Area -->
+        <div id="quillEditor" class="editor-page bg-white shadow-sm border border-top-0 rounded-bottom"></div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ======================================================== -->
+  <!-- MODALS -->
+  <!-- ======================================================== -->
+
+  <!-- Share Modal -->
+  <div class="modal fade" id="shareModal" tabindex="-1" aria-labelledby="shareModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content shadow">
+        <div class="modal-header">
+          <h5 class="modal-title fw-bold" id="shareModalLabel">
+            <i class="bi bi-person-plus text-primary me-2"></i>Share "<span id="shareModalDocTitle">Document</span>"
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <form id="shareForm">
+            <div class="mb-3">
+              <label class="form-label small fw-semibold">Invite Collaborator Email</label>
+              <div class="input-group">
+                <input type="email" id="shareEmailInput" class="form-control" placeholder="e.g. bob@ajaia.test" required>
+                <select id="sharePermissionSelect" class="form-select" style="max-width: 120px;">
+                  <option value="edit">Editor</option>
+                  <option value="view">Viewer</option>
+                </select>
+                <button type="submit" class="btn btn-primary" id="btnSubmitShare">Invite</button>
+              </div>
+              <div class="form-text">Quick select test user: <a href="#" id="quickPickBob">bob@ajaia.test</a> or <a href="#" id="quickPickAlice">alice@ajaia.test</a></div>
+            </div>
+          </form>
+
+          <hr>
+
+          <h6 class="fw-semibold small text-muted text-uppercase mb-2">People with Access</h6>
+          <div id="shareAccessList" class="list-group list-group-flush">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+        <div class="modal-footer bg-light py-2">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Done</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- File Upload Modal -->
+  <div class="modal fade" id="uploadModal" tabindex="-1" aria-labelledby="uploadModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content shadow">
+        <div class="modal-header">
+          <h5 class="modal-title fw-bold" id="uploadModalLabel">
+            <i class="bi bi-cloud-arrow-up text-primary me-2"></i>Import Document File
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="text-muted small">Upload a <strong>Markdown (.md)</strong> or <strong>Plain Text (.txt)</strong> file. The file is preserved in MinIO S3 and parsed directly into an editable rich-text document.</p>
+          <div class="mb-3">
+            <input class="form-control" type="file" id="modalFileInput" accept=".md,.txt">
+          </div>
+          <div id="uploadProgress" class="d-none alert alert-info py-2 small">
+            <div class="spinner-border spinner-border-sm me-2"></div> Uploading and parsing file...
+          </div>
+        </div>
+        <div class="modal-footer bg-light py-2">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btnSubmitUpload">Upload & Open</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1080;">
+    <div id="appToast" class="toast align-items-center text-white bg-dark border-0 shadow" role="alert" aria-live="assertive" aria-atomic="true">
+      <div class="d-flex">
+        <div class="toast-body" id="toastMessage">Action completed successfully.</div>
+        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts: Bootstrap, Quill, App Logic -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
