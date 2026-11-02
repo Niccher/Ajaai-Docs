@@ -1,9 +1,23 @@
 /**
  * Ajaia Collaborative Document Editor
  * Frontend Application Logic (Vanilla JS + Bootstrap 5.3 + Quill.js)
+ * Hardened against DOM-XSS, supporting batch uploads (20MB) and Markdown/Text exports.
  */
 
 document.addEventListener("DOMContentLoaded", () => {
+  // ----------------------------------------------------
+  // Security Helper: DOM-XSS Escaping
+  // ----------------------------------------------------
+  function escapeHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   // ----------------------------------------------------
   // Application State
   // ----------------------------------------------------
@@ -41,7 +55,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnCreateDoc = document.getElementById("btnCreateDoc");
   const btnBackToDashboard = document.getElementById("btnBackToDashboard");
   const btnDeleteDoc = document.getElementById("btnDeleteDoc");
-  const btnDownloadRaw = document.getElementById("btnDownloadRaw");
+  const btnDownloadRawLink = document.getElementById("btnDownloadRawLink");
+  const btnExportMd = document.getElementById("btnExportMd");
+  const btnExportTxt = document.getElementById("btnExportTxt");
+  const btnExportHtml = document.getElementById("btnExportHtml");
   const docMetaInfo = document.getElementById("docMetaInfo");
   const brandLink = document.getElementById("brandLink");
 
@@ -114,14 +131,12 @@ document.addEventListener("DOMContentLoaded", () => {
     placeholder: "Start typing your document content here...",
   });
 
-  // Listen to text changes for debounced autosave
   quill.on("text-change", (delta, oldDelta, source) => {
     if (source === "user" && state.currentDoc) {
       scheduleAutoSave();
     }
   });
 
-  // Title change triggers autosave
   docTitleInput.addEventListener("input", () => {
     if (state.currentDoc) {
       scheduleAutoSave();
@@ -156,7 +171,6 @@ document.addEventListener("DOMContentLoaded", () => {
   async function saveCurrentDocument() {
     if (!state.currentDoc || state.isSaving) return;
 
-    // Check permission: Viewers cannot save
     if (state.currentDoc.permission === "view") {
       setSaveStatus("saved");
       state.hasPendingChanges = false;
@@ -211,8 +225,8 @@ document.addEventListener("DOMContentLoaded", () => {
       li.innerHTML = `
         <a class="dropdown-item d-flex align-items-center justify-content-between ${isCurrent ? 'active' : ''}" href="#">
           <div>
-            <div class="fw-medium">${u.name}</div>
-            <div class="small ${isCurrent ? 'text-light' : 'text-muted'}">${u.email}</div>
+            <div class="fw-medium">${escapeHtml(u.name)}</div>
+            <div class="small ${isCurrent ? 'text-light' : 'text-muted'}">${escapeHtml(u.email)}</div>
           </div>
           ${isCurrent ? '<i class="bi bi-check-lg ms-2"></i>' : ''}
         </a>
@@ -238,7 +252,6 @@ document.addEventListener("DOMContentLoaded", () => {
     renderPersonaDropdown();
     showToast(`Switched active persona to ${user.name}`);
 
-    // If viewing document, refresh permissions or redirect to dashboard
     if (state.currentDoc) {
       openDocument(state.currentDoc.id);
     } else {
@@ -274,7 +287,7 @@ document.addEventListener("DOMContentLoaded", () => {
       container.innerHTML = `
         <div class="col-12 text-center py-5 text-muted">
           <i class="bi bi-file-earmark-text fs-1 d-block mb-2 text-secondary opacity-50"></i>
-          <p class="mb-0">${isOwnedTab ? 'No documents created yet. Click "New Document" or import a file above!' : 'No documents shared with you yet.'}</p>
+          <p class="mb-0">${isOwnedTab ? 'No documents created yet. Click "New Document" or import files above!' : 'No documents shared with you yet.'}</p>
         </div>`;
       return;
     }
@@ -299,17 +312,20 @@ document.addEventListener("DOMContentLoaded", () => {
         ? `<span class="badge ${doc.permission === 'edit' ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning'} border">${doc.permission.toUpperCase()}</span>`
         : '';
 
+      const safeTitle = escapeHtml(doc.title);
+      const safeOwner = escapeHtml(doc.owner_name || doc.owner_email);
+
       col.innerHTML = `
         <div class="card h-100 doc-card shadow-sm border bg-white">
           <div class="doc-icon-preview">
             <i class="bi bi-file-earmark-richtext fs-1 text-primary"></i>
           </div>
           <div class="card-body p-3 d-flex flex-column">
-            <h6 class="card-title fw-bold text-dark text-truncate mb-1" title="${doc.title}">
-              ${doc.title}
+            <h6 class="card-title fw-bold text-dark text-truncate mb-1" title="${safeTitle}">
+              ${safeTitle}
             </h6>
             <div class="small text-muted mb-2">
-              ${isOwnedTab ? `Updated ${updatedDate}` : `Owner: ${doc.owner_name || doc.owner_email}`}
+              ${isOwnedTab ? `Updated ${updatedDate}` : `Owner: ${safeOwner}`}
             </div>
             <div class="mt-auto d-flex justify-content-between align-items-center pt-2 border-top">
               <div class="d-flex gap-1 align-items-center">
@@ -338,33 +354,27 @@ document.addEventListener("DOMContentLoaded", () => {
       const doc = await apiFetch(`/api/v1/documents/${docId}`);
       state.currentDoc = doc;
 
-      // Populate UI
       docTitleInput.value = doc.title;
       quill.root.innerHTML = doc.content_html || "";
       setSaveStatus("saved");
 
-      // Permission controls
       const isOwner = doc.permission === "owner";
       const canEdit = isOwner || doc.permission === "edit";
 
       permissionBadge.textContent = isOwner ? "Owner" : (doc.permission === "edit" ? "Editor" : "Viewer (Read-only)");
       permissionBadge.className = `badge ${isOwner ? 'bg-primary-subtle text-primary' : (canEdit ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning')}`;
 
-      // Enable/disable Quill editor
       quill.enable(canEdit);
       docTitleInput.disabled = !canEdit;
 
-      // Metadata info
       const updatedDate = new Date(doc.updated_at).toLocaleString();
-      docMetaInfo.textContent = `Owner: ${doc.owner_name} (${doc.owner_email}) • Last updated: ${updatedDate}`;
+      docMetaInfo.textContent = `Owner: ${escapeHtml(doc.owner_name)} (${escapeHtml(doc.owner_email)}) • Last updated: ${updatedDate}`;
 
-      // Download original file button
+      // Toggle raw download link in Export dropdown
       if (doc.minio_object_key) {
-        btnDownloadRaw.classList.remove("d-none");
-        btnDownloadRaw.classList.add("d-flex");
+        btnDownloadRawLink.classList.remove("d-none");
       } else {
-        btnDownloadRaw.classList.add("d-none");
-        btnDownloadRaw.classList.remove("d-flex");
+        btnDownloadRawLink.classList.add("d-none");
       }
 
       // Delete button: Only owner
@@ -380,7 +390,6 @@ document.addEventListener("DOMContentLoaded", () => {
         btnOpenShare.classList.remove("d-flex");
       }
 
-      // Switch views
       dashboardView.classList.add("d-none");
       editorView.classList.remove("d-none");
       navDocControls.classList.remove("d-none");
@@ -403,7 +412,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // ----------------------------------------------------
-  // Document Actions (Create, Delete, Raw Download)
+  // Document Actions (Create, Delete, Export)
   // ----------------------------------------------------
   btnCreateDoc.addEventListener("click", async () => {
     try {
@@ -437,9 +446,28 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  btnDownloadRaw.addEventListener("click", () => {
+  // Export triggers (Markdown, Text, HTML, MinIO raw)
+  btnExportMd.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (!state.currentDoc) return;
+    window.open(`/api/v1/documents/${state.currentDoc.id}/export?format=md&x_user_email=${encodeURIComponent(state.activeUser.email)}`, "_blank");
+  });
+
+  btnExportTxt.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (!state.currentDoc) return;
+    window.open(`/api/v1/documents/${state.currentDoc.id}/export?format=txt&x_user_email=${encodeURIComponent(state.activeUser.email)}`, "_blank");
+  });
+
+  btnExportHtml.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (!state.currentDoc) return;
+    window.open(`/api/v1/documents/${state.currentDoc.id}/export?format=html&x_user_email=${encodeURIComponent(state.activeUser.email)}`, "_blank");
+  });
+
+  btnDownloadRawLink.addEventListener("click", (e) => {
+    e.preventDefault();
     if (!state.currentDoc || !state.currentDoc.minio_object_key) return;
-    // Download via direct link with auth header simulation or GET route
     window.open(`/api/v1/documents/${state.currentDoc.id}/raw?x_user_email=${encodeURIComponent(state.activeUser.email)}`, "_blank");
   });
 
@@ -462,8 +490,8 @@ document.addEventListener("DOMContentLoaded", () => {
     shareAccessList.innerHTML = `
       <div class="list-group-item d-flex justify-content-between align-items-center py-2">
         <div>
-          <span class="fw-semibold">${state.currentDoc.owner_name}</span>
-          <span class="text-muted small">(${state.currentDoc.owner_email})</span>
+          <span class="fw-semibold">${escapeHtml(state.currentDoc.owner_name)}</span>
+          <span class="text-muted small">(${escapeHtml(state.currentDoc.owner_email)})</span>
         </div>
         <span class="badge bg-primary">Owner</span>
       </div>
@@ -475,9 +503,9 @@ document.addEventListener("DOMContentLoaded", () => {
         item.className = "list-group-item d-flex justify-content-between align-items-center py-2";
         item.innerHTML = `
           <div>
-            <span class="fw-semibold">${share.user_name || share.user_email}</span>
-            <span class="text-muted small">(${share.user_email})</span>
-            <span class="badge bg-secondary-subtle text-secondary ms-2">${share.permission.toUpperCase()}</span>
+            <span class="fw-semibold">${escapeHtml(share.user_name || share.user_email)}</span>
+            <span class="text-muted small">(${escapeHtml(share.user_email)})</span>
+            <span class="badge bg-secondary-subtle text-secondary ms-2">${escapeHtml(share.permission.toUpperCase())}</span>
           </div>
           <button class="btn btn-sm btn-outline-danger py-0 px-2 btn-revoke" data-user-id="${share.user_id}">
             <i class="bi bi-x"></i> Revoke
@@ -490,7 +518,6 @@ document.addEventListener("DOMContentLoaded", () => {
               method: "DELETE",
             });
             showToast(`Revoked access for ${share.user_email}`);
-            // Refresh document state
             const refreshed = await apiFetch(`/api/v1/documents/${state.currentDoc.id}`);
             state.currentDoc = refreshed;
             renderShareModal();
@@ -537,33 +564,46 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // ----------------------------------------------------
-  // File Upload Ingestion (MinIO S3 + Parser)
+  // Batch File Upload Ingestion (MinIO S3 + Parser, 20MB)
   // ----------------------------------------------------
-  async function handleFileUpload(file) {
-    if (!file) return;
+  async function handleFileUpload(files) {
+    if (!files || files.length === 0) return;
 
-    const ext = file.name.substring(file.name.lastIndexOf(".")).toLowerCase();
-    if (ext !== ".md" && ext !== ".txt") {
-      showToast("Unsupported file type. Please upload a .md or .txt file.", true);
+    const validFiles = Array.from(files).filter((file) => {
+      const ext = file.name.substring(file.name.lastIndexOf(".")).toLowerCase();
+      return ext === ".md" || ext === ".txt";
+    });
+
+    if (validFiles.length === 0) {
+      showToast("Unsupported file type. Please select .md or .txt files.", true);
       return;
     }
 
     const formData = new FormData();
-    formData.append("file", file);
+    validFiles.forEach((file) => {
+      formData.append("files", file);
+    });
 
     uploadProgress.classList.remove("d-none");
     btnSubmitUpload.disabled = true;
 
     try {
-      const createdDoc = await apiFetch("/api/v1/documents/upload", {
+      const result = await apiFetch("/api/v1/documents/upload", {
         method: "POST",
         body: formData,
       });
 
       uploadModal.hide();
       modalFileInput.value = "";
-      showToast(`Imported "${createdDoc.title}" successfully into MinIO and Document Editor!`);
-      openDocument(createdDoc.id);
+      dragFileInput.value = "";
+
+      if (Array.isArray(result)) {
+        showToast(`Successfully imported ${result.length} documents!`);
+        openDocument(result[0].id);
+      } else {
+        showToast(`Imported "${result.title}" successfully into MinIO and Editor!`);
+        openDocument(result.id);
+      }
     } catch (err) {
       showToast(`Import failed: ${err.message}`, true);
     } finally {
@@ -573,19 +613,17 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   btnSubmitUpload.addEventListener("click", () => {
-    const file = modalFileInput.files[0];
-    if (!file) {
-      alert("Please select a file to upload.");
+    if (!modalFileInput.files || modalFileInput.files.length === 0) {
+      alert("Please select at least one file to upload.");
       return;
     }
-    handleFileUpload(file);
+    handleFileUpload(modalFileInput.files);
   });
 
-  // Drag and drop quick upload
   quickDropzone.addEventListener("click", () => dragFileInput.click());
   dragFileInput.addEventListener("change", (e) => {
     if (e.target.files.length > 0) {
-      handleFileUpload(e.target.files[0]);
+      handleFileUpload(e.target.files);
     }
   });
 
@@ -602,7 +640,7 @@ document.addEventListener("DOMContentLoaded", () => {
     e.preventDefault();
     quickDropzone.classList.remove("dragover");
     if (e.dataTransfer.files.length > 0) {
-      handleFileUpload(e.dataTransfer.files[0]);
+      handleFileUpload(e.dataTransfer.files);
     }
   });
 

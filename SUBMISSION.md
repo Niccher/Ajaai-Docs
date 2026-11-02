@@ -13,19 +13,21 @@
 This package contains everything required for evaluating the collaborative document editor:
 
 - [x] **Source Code:** Complete, clean full-stack application (FastAPI + PostgreSQL + MinIO + Bootstrap/Quill).
-- [x] **README.md:** Clear setup and local run instructions for both Docker Compose and Python venv.
+- [x] **README.md:** Clear setup and local run instructions for both `scripts/deploy.sh`, Docker Compose, and Python venv.
 - [x] **ARCHITECTURE.md:** Short architecture note explaining core prioritizations, tradeoffs, and system design.
 - [x] **AI_WORKFLOW.md:** Detailed AI usage breakdown, material accelerations, rejected outputs, and verification methods.
 - [x] **docs/audit.md:** Formal system architecture, resource footprint, and failure mode audit.
-- [x] **Automated Tests:** 100% passing Pytest test suite covering CRUD, permissions (403), sharing, and file upload.
+- [x] **One-Click Deployment Pipeline (`scripts/deploy.sh`):** Automated pre-flight checks, container health verification, migrations, and test runner.
+- [x] **Database Migrations:** Official Alembic environment (`alembic/`) with versioned schema tracking.
+- [x] **Automated Tests:** 11 passing Pytest test cases (100% pass rate) covering CRUD, permissions (403), sharing, batch file uploads, 20 MB ceiling, Markdown export, and XSS sanitization.
 - [x] **Walkthrough Video Outline:** Script and link placeholder for the 3-5 minute unlisted walkthrough video.
 
 ---
 
 ## 2. Live Deployment & Reviewer Credentials
 
-- **Live Product URL:** `http://<GCP_EXTERNAL_IP>:8000` *(Deployed on Google Cloud Compute Engine instance via Docker Compose)*
-- **Interactive API Documentation:** `http://<GCP_EXTERNAL_IP>:8000/docs`
+- **Live Product URL:** `http://<GCP_EXTERNAL_IP>:5588` *(Deployed on Google Cloud Compute Engine instance via Docker Compose / `scripts/deploy.sh`)*
+- **Interactive API Documentation:** `http://<GCP_EXTERNAL_IP>:5588/docs`
 - **MinIO Object Storage Console:** `http://<GCP_EXTERNAL_IP>:9001`
   - **Console Username:** `minioadmin`
   - **Console Password:** `minioadminpassword`

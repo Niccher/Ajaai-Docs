@@ -4,10 +4,11 @@ import re
 import uuid
 import logging
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import markdown
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Header, Request, Response
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Header, Request, Response, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -30,6 +31,55 @@ from backend.storage import storage_service
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ajaia_docs")
 
+# Security & Upload Configuration
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB ceiling
+
+
+def sanitize_html(html_str: str) -> str:
+    """
+    Sanitize HTML to neutralize XSS attacks.
+    Strips script tags, iframes, inline event handlers (on*), and javascript: URIs.
+    """
+    if not html_str:
+        return ""
+    # Strip <script>...</script>
+    cleaned = re.sub(r"<script.*?>.*?</script>", "", html_str, flags=re.IGNORECASE | re.DOTALL)
+    # Strip <iframe...></iframe>
+    cleaned = re.sub(r"<iframe.*?>.*?</iframe>", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    # Strip on* event handlers (e.g. onerror=, onclick=, onload=)
+    cleaned = re.sub(r"\s+on\w+\s*=\s*['\"].*?['\"]", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+on\w+\s*=\s*[^ >]+", "", cleaned, flags=re.IGNORECASE)
+    # Neutralize javascript: hrefs
+    cleaned = re.sub(r"href\s*=\s*['\"]javascript:.*?['\"]", "href='#'", cleaned, flags=re.IGNORECASE)
+    return cleaned
+
+
+def html_to_markdown(html_str: str) -> str:
+    """Convert HTML markup back into Markdown representation for clean export."""
+    if not html_str:
+        return ""
+    text_content = html_str
+    # Convert headings
+    text_content = re.sub(r"<h1>(.*?)</h1>", r"# \1\n\n", text_content, flags=re.IGNORECASE | re.DOTALL)
+    text_content = re.sub(r"<h2>(.*?)</h2>", r"## \1\n\n", text_content, flags=re.IGNORECASE | re.DOTALL)
+    text_content = re.sub(r"<h3>(.*?)</h3>", r"### \1\n\n", text_content, flags=re.IGNORECASE | re.DOTALL)
+    # Convert strong/b
+    text_content = re.sub(r"<(?:strong|b)>(.*?)</(?:strong|b)>", r"**\1**", text_content, flags=re.IGNORECASE | re.DOTALL)
+    # Convert em/i
+    text_content = re.sub(r"<(?:em|i)>(.*?)</(?:em|i)>", r"*\1*", text_content, flags=re.IGNORECASE | re.DOTALL)
+    # Convert blockquotes
+    text_content = re.sub(r"<blockquote>(.*?)</blockquote>", r"> \1\n\n", text_content, flags=re.IGNORECASE | re.DOTALL)
+    # Convert list items
+    text_content = re.sub(r"<li>(.*?)</li>", r"- \1\n", text_content, flags=re.IGNORECASE | re.DOTALL)
+    # Convert paragraphs and line breaks
+    text_content = re.sub(r"<p>(.*?)</p>", r"\1\n\n", text_content, flags=re.IGNORECASE | re.DOTALL)
+    text_content = re.sub(r"<br\s*/?>", r"\n", text_content, flags=re.IGNORECASE)
+    # Strip remaining HTML tags
+    text_content = re.sub(r"<[^>]+>", "", text_content)
+    # Deduplicate whitespace lines
+    text_content = re.sub(r"\n{3,}", "\n\n", text_content)
+    return text_content.strip()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -51,8 +101,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Ajaia Collaborative Document Editor API",
     description="Lightweight collaborative document editor with rich-text, MinIO S3 ingestion, and persona-based sharing.",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
+)
+
+# CORS Configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -62,11 +121,9 @@ def get_current_user(
     x_user_email: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ) -> User:
-    # Accept from Header, or fallback to Query param (e.g. for window.open direct downloads)
     email = x_user_email or request.query_params.get("x_user_email") or "alice@ajaia.test"
     user = db.query(User).filter(User.email == email).first()
     if not user:
-        # Fallback to creating user if email doesn't exist
         user = User(email=email, name=email.split("@")[0].capitalize())
         db.add(user)
         db.commit()
@@ -75,7 +132,6 @@ def get_current_user(
 
 
 def serialize_doc(doc: Document, current_user_id: str) -> DocumentResponse:
-    # Determine user's permission
     if doc.owner_id == current_user_id:
         perm = "owner"
     else:
@@ -131,6 +187,7 @@ def health_check(db: Session = Depends(get_db)):
         "database_connected": db_ok,
         "minio_connected": minio_ok,
         "bucket": storage_service.bucket,
+        "max_upload_size_mb": MAX_FILE_SIZE // (1024 * 1024),
     }
 
 
@@ -146,10 +203,7 @@ def list_documents(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    List documents partitioned into 'owned' and 'shared'.
-    """
-    # Owned documents
+    """List documents partitioned into 'owned' and 'shared'."""
     owned_docs = (
         db.query(Document)
         .filter(Document.owner_id == current_user.id)
@@ -157,7 +211,6 @@ def list_documents(
         .all()
     )
 
-    # Shared documents
     shared_entries = (
         db.query(DocumentShare)
         .filter(DocumentShare.user_id == current_user.id)
@@ -184,9 +237,10 @@ def create_document(
     db: Session = Depends(get_db)
 ):
     """Create a new blank document owned by the active user."""
+    safe_html = sanitize_html(doc_in.content_html or "<p><br></p>")
     new_doc = Document(
-        title=doc_in.title or "Untitled Document",
-        content_html=doc_in.content_html or "<p><br></p>",
+        title=(doc_in.title or "Untitled Document").strip(),
+        content_html=safe_html,
         content_text=doc_in.content_text or "",
         owner_id=current_user.id,
         file_type="native",
@@ -211,7 +265,6 @@ def get_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Access control check
     is_owner = (doc.owner_id == current_user.id)
     is_shared = any(s.user_id == current_user.id for s in doc.shares)
 
@@ -239,7 +292,6 @@ def update_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Permission check
     is_owner = (doc.owner_id == current_user.id)
     share = next((s for s in doc.shares if s.user_id == current_user.id), None)
 
@@ -252,7 +304,7 @@ def update_document(
     if doc_in.title is not None:
         doc.title = doc_in.title.strip() or "Untitled Document"
     if doc_in.content_html is not None:
-        doc.content_html = doc_in.content_html
+        doc.content_html = sanitize_html(doc_in.content_html)
     if doc_in.content_text is not None:
         doc.content_text = doc_in.content_text
 
@@ -278,7 +330,6 @@ def delete_document(
             detail="Access forbidden: Only the document owner can delete this document."
         )
 
-    # Clean up MinIO object if associated
     if doc.minio_object_key:
         try:
             storage_service.delete_file(doc.minio_object_key)
@@ -297,10 +348,7 @@ def share_document(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Share document with another user by email.
-    Assigns role: 'edit' or 'view'.
-    """
+    """Share document with another user by email (Editor or Viewer)."""
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -315,7 +363,6 @@ def share_document(
     if target_email == current_user.email.lower():
         raise HTTPException(status_code=400, detail="Cannot share document with yourself.")
 
-    # Find or seed target user
     target_user = db.query(User).filter(User.email == target_email).first()
     if not target_user:
         target_user = User(
@@ -326,7 +373,6 @@ def share_document(
         db.commit()
         db.refresh(target_user)
 
-    # Check existing share
     existing_share = (
         db.query(DocumentShare)
         .filter(DocumentShare.document_id == doc.id, DocumentShare.user_id == target_user.id)
@@ -392,18 +438,12 @@ def revoke_share(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@app.post("/api/v1/documents/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED, tags=["Files"])
-async def upload_document_file(
-    file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Upload a .txt or .md file:
-    1. Persists the raw file to MinIO S3 object storage.
-    2. Parses content into rich-text HTML.
-    3. Creates a new Document record in PostgreSQL.
-    """
+# ==========================================
+# FILE INGESTION & EXPORT (TASK 2 & STRETCH)
+# ==========================================
+
+async def process_single_upload(file: UploadFile, current_user: User, db: Session) -> DocumentResponse:
+    """Helper to process a single uploaded file with size limit, MinIO storage, and HTML conversion."""
     filename = file.filename or "uploaded_document.txt"
     ext = os.path.splitext(filename)[1].lower()
 
@@ -414,6 +454,12 @@ async def upload_document_file(
         )
 
     content_bytes = await file.read()
+    if len(content_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File '{filename}' exceeds maximum allowed size of {MAX_FILE_SIZE // (1024 * 1024)} MB."
+        )
+
     try:
         raw_text = content_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -429,18 +475,17 @@ async def upload_document_file(
         )
     except Exception as e:
         logger.error(f"MinIO upload error: {e}")
-        # If MinIO is unavailable, record None but continue parsing so workflow is resilient
         object_key = None
 
-    # Step 2: Convert to HTML AST
+    # Step 2: Convert to sanitized HTML AST
     if ext == ".md":
-        html_content = markdown.markdown(
+        parsed_html = markdown.markdown(
             raw_text,
             extensions=["extra", "nl2br", "sane_lists"]
         )
+        html_content = sanitize_html(parsed_html)
         file_type = "markdown"
     else:
-        # Plain text into formatted paragraphs
         escaped_text = raw_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         paragraphs = [f"<p>{p.strip()}</p>" for p in escaped_text.split("\n\n") if p.strip()]
         html_content = "".join(paragraphs) if paragraphs else f"<p>{escaped_text}</p>"
@@ -448,7 +493,7 @@ async def upload_document_file(
 
     doc_title = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ").capitalize()
 
-    # Step 3: Insert Document in PostgreSQL
+    # Step 3: Insert Document into PostgreSQL with rollback compensation
     new_doc = Document(
         title=doc_title or "Imported Document",
         content_html=html_content,
@@ -457,11 +502,90 @@ async def upload_document_file(
         minio_object_key=object_key,
         file_type=file_type,
     )
-    db.add(new_doc)
-    db.commit()
-    db.refresh(new_doc)
+    try:
+        db.add(new_doc)
+        db.commit()
+        db.refresh(new_doc)
+    except Exception as e:
+        db.rollback()
+        if object_key:
+            storage_service.delete_file(object_key)
+        raise HTTPException(status_code=500, detail=f"Database commit error: {e}")
 
     return serialize_doc(new_doc, current_user.id)
+
+
+@app.post("/api/v1/documents/upload", status_code=status.HTTP_201_CREATED, tags=["Files"])
+async def upload_document_files(
+    files: Optional[List[UploadFile]] = File(None),
+    file: Optional[UploadFile] = File(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Upload one or multiple .txt / .md files (up to 20 MB each).
+    Preserves raw files in MinIO S3 and converts them into editable rich-text documents.
+    """
+    file_list = []
+    if files:
+        file_list.extend(files)
+    if file:
+        file_list.append(file)
+
+    if not file_list:
+        raise HTTPException(status_code=400, detail="No files provided for upload.")
+
+    results = []
+    for f in file_list:
+        doc = await process_single_upload(f, current_user, db)
+        results.append(doc)
+
+    # Return single doc if single uploaded, or list if multiple
+    if len(results) == 1:
+        return results[0]
+    return results
+
+
+@app.get("/api/v1/documents/{doc_id}/export", tags=["Files"])
+def export_document(
+    doc_id: str,
+    format: str = Query("md", pattern="^(md|txt|html)$"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Export document content to Markdown (.md), Plain Text (.txt), or HTML.
+    Supports download streaming with proper Content-Disposition header.
+    """
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    is_owner = (doc.owner_id == current_user.id)
+    is_shared = any(s.user_id == current_user.id for s in doc.shares)
+    if not is_owner and not is_shared:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    safe_title = re.sub(r'[^a-zA-Z0-9_-]', '_', doc.title.lower().replace(" ", "_")) or "document"
+
+    if format == "md":
+        content = html_to_markdown(doc.content_html)
+        media_type = "text/markdown; charset=utf-8"
+        filename = f"{safe_title}.md"
+    elif format == "txt":
+        content = doc.content_text or html_to_markdown(doc.content_html)
+        media_type = "text/plain; charset=utf-8"
+        filename = f"{safe_title}.txt"
+    else:
+        content = doc.content_html or ""
+        media_type = "text/html; charset=utf-8"
+        filename = f"{safe_title}.html"
+
+    return StreamingResponse(
+        io.BytesIO(content.encode("utf-8")),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 
 @app.get("/api/v1/documents/{doc_id}/raw", tags=["Files"])
@@ -470,12 +594,11 @@ def download_raw_file(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Download original imported file from MinIO."""
+    """Download original imported file directly from MinIO."""
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc or not doc.minio_object_key:
         raise HTTPException(status_code=404, detail="No raw file associated with this document.")
 
-    # Access check
     is_owner = (doc.owner_id == current_user.id)
     is_shared = any(s.user_id == current_user.id for s in doc.shares)
     if not is_owner and not is_shared:
@@ -498,7 +621,6 @@ def download_raw_file(
 # STATIC FRONTEND MOUNTING
 # ==========================================
 
-# Mount frontend static directory if exists
 static_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "static")
 if os.path.exists(static_path):
     app.mount("/static", StaticFiles(directory=static_path), name="static")
@@ -511,4 +633,4 @@ def render_app():
     if os.path.exists(index_path):
         with open(index_path, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
-    return HTMLResponse("<h1>Ajaia Docs</h1><p>Frontend template not found. Ensure frontend/templates/index.html is created.</p>")
+    return HTMLResponse("<h1>Ajaia Docs</h1><p>Frontend template not found.</p>")

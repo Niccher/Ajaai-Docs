@@ -225,3 +225,71 @@ def test_delete_access_control(client):
     # 3. Alice deletes her own doc -> 204
     res_alice_del = client.delete(f"/api/v1/documents/{doc_id}", headers={"X-User-Email": "alice@ajaia.test"})
     assert res_alice_del.status_code == 204
+
+
+def test_batch_file_upload(client):
+    """Verify uploading multiple files simultaneously."""
+    file1 = ("doc1.md", io.BytesIO(b"# Doc One"), "text/markdown")
+    file2 = ("doc2.txt", io.BytesIO(b"Doc Two Plain Text"), "text/plain")
+
+    res = client.post(
+        "/api/v1/documents/upload",
+        files=[("files", file1), ("files", file2)],
+        headers={"X-User-Email": "alice@ajaia.test"}
+    )
+    assert res.status_code == 201
+    docs = res.json()
+    assert isinstance(docs, list)
+    assert len(docs) == 2
+    titles = [d["title"] for d in docs]
+    assert "Doc1" in titles
+    assert "Doc2" in titles
+
+
+def test_file_size_limit_exceeded(client):
+    """Verify that file uploads exceeding 20 MB are rejected with HTTP 413."""
+    from backend.main import MAX_FILE_SIZE
+    # Create fake stream exceeding 20 MB
+    large_bytes = b"X" * (MAX_FILE_SIZE + 1024)
+    file_payload = ("oversized.txt", io.BytesIO(large_bytes), "text/plain")
+
+    res = client.post(
+        "/api/v1/documents/upload",
+        files={"file": file_payload},
+        headers={"X-User-Email": "alice@ajaia.test"}
+    )
+    assert res.status_code == 413
+    assert "exceeds maximum allowed size" in res.json()["detail"].lower()
+
+
+def test_export_markdown_and_txt(client):
+    """Verify exporting a document back into Markdown and plain text."""
+    # 1. Create document with HTML
+    doc_res = client.post(
+        "/api/v1/documents",
+        json={"title": "Export Spec", "content_html": "<h2>Architecture</h2><p>Here is <strong>bold</strong> text.</p>"},
+        headers={"X-User-Email": "alice@ajaia.test"}
+    )
+    doc_id = doc_res.json()["id"]
+
+    # 2. Export as Markdown
+    res_md = client.get(f"/api/v1/documents/{doc_id}/export?format=md", headers={"X-User-Email": "alice@ajaia.test"})
+    assert res_md.status_code == 200
+    assert "## Architecture" in res_md.text
+    assert "**bold**" in res_md.text
+    assert "attachment; filename=\"export_spec.md\"" in res_md.headers["content-disposition"]
+
+
+def test_xss_payload_sanitized(client):
+    """Verify that malicious <script> tags and onerror handlers are sanitized."""
+    malicious_html = "<p>Clean</p><script>alert('XSS')</script><img src=x onerror=alert(1)>"
+    doc_res = client.post(
+        "/api/v1/documents",
+        json={"title": "Security Test", "content_html": malicious_html},
+        headers={"X-User-Email": "alice@ajaia.test"}
+    )
+    assert doc_res.status_code == 201
+    html = doc_res.json()["content_html"]
+    assert "<script" not in html.lower()
+    assert "onerror=" not in html.lower()
+    assert "<p>Clean</p>" in html

@@ -39,6 +39,10 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT:-5588}:8000"
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app/backend
+      - ./frontend:/app/frontend
     environment:
       - DATABASE_URL=postgresql://postgres:postgrespassword@db:5432/ajaia_docs
       - MINIO_ENDPOINT=minio:9000

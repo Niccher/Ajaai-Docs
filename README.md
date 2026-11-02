@@ -49,8 +49,8 @@ The easiest way to run the entire stack (FastAPI web app, PostgreSQL database, a
 git clone <repo-url>
 cd Ajaia
 
-# 2. Start all services with Docker Compose
-docker compose up -d --build
+# 2. Run the automated one-click deployment pipeline (or docker compose up -d --build)
+bash scripts/deploy.sh
 ```
 
 That's it! All 3 containers will automatically boot and perform healthchecks:

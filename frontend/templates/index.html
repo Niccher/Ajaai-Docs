@@ -98,9 +98,9 @@
       <div class="card border-dashed mb-4 bg-white p-3 text-center dropzone-box" id="quickDropzone">
         <div class="card-body py-3">
           <i class="bi bi-file-earmark-arrow-up text-primary fs-2"></i>
-          <h6 class="fw-semibold mt-2 mb-1">Drag & Drop a .md or .txt file here to import</h6>
-          <p class="text-muted small mb-0">Files are uploaded to MinIO S3 and converted to editable rich-text</p>
-          <input type="file" id="dragFileInput" class="d-none" accept=".md,.txt">
+          <h6 class="fw-semibold mt-2 mb-1">Drag & Drop .md or .txt files here to import</h6>
+          <p class="text-muted small mb-0">Supports batch uploads (up to 20 MB each). Ingested to MinIO S3 and converted to editable rich-text</p>
+          <input type="file" id="dragFileInput" class="d-none" accept=".md,.txt" multiple>
         </div>
       </div>
 
@@ -149,9 +149,21 @@
         </button>
         <div class="d-flex align-items-center gap-2">
           <span id="docMetaInfo" class="small text-muted"></span>
-          <button id="btnDownloadRaw" class="btn btn-sm btn-outline-info d-none align-items-center gap-1" title="Download original uploaded file from MinIO">
-            <i class="bi bi-download"></i> Original File
-          </button>
+
+          <!-- Export Dropdown (Optional Stretch Feature) -->
+          <div class="dropdown">
+            <button class="btn btn-sm btn-outline-secondary dropdown-toggle d-flex align-items-center gap-1" type="button" id="exportDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-box-arrow-up-right"></i> Export
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end shadow-sm" aria-labelledby="exportDropdown">
+              <li><a class="dropdown-item d-flex align-items-center gap-2" href="#" id="btnExportMd"><i class="bi bi-markdown text-primary"></i> Markdown (.md)</a></li>
+              <li><a class="dropdown-item d-flex align-items-center gap-2" href="#" id="btnExportTxt"><i class="bi bi-file-text text-secondary"></i> Plain Text (.txt)</a></li>
+              <li><a class="dropdown-item d-flex align-items-center gap-2" href="#" id="btnExportHtml"><i class="bi bi-filetype-html text-danger"></i> HTML (.html)</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item d-flex align-items-center gap-2 d-none" href="#" id="btnDownloadRawLink"><i class="bi bi-cloud-arrow-down text-info"></i> Original File (MinIO)</a></li>
+            </ul>
+          </div>
+
           <button id="btnDeleteDoc" class="btn btn-sm btn-outline-danger d-none align-items-center gap-1" title="Delete document">
             <i class="bi bi-trash"></i>
           </button>
@@ -251,9 +263,9 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-          <p class="text-muted small">Upload a <strong>Markdown (.md)</strong> or <strong>Plain Text (.txt)</strong> file. The file is preserved in MinIO S3 and parsed directly into an editable rich-text document.</p>
+          <p class="text-muted small">Upload one or multiple <strong>Markdown (.md)</strong> or <strong>Plain Text (.txt)</strong> files (up to 20 MB each). Files are preserved in MinIO S3 and parsed directly into editable rich-text documents.</p>
           <div class="mb-3">
-            <input class="form-control" type="file" id="modalFileInput" accept=".md,.txt">
+            <input class="form-control" type="file" id="modalFileInput" accept=".md,.txt" multiple>
           </div>
           <div id="uploadProgress" class="d-none alert alert-info py-2 small">
             <div class="spinner-border spinner-border-sm me-2"></div> Uploading and parsing file...
