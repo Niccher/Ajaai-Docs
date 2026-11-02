@@ -70,12 +70,32 @@ section() {
     echo -e "\n${CYAN}${BOLD}=== $1 ===${RESET}"
 }
 
-# ── 1. Detect Host IP & Port Assignment ───────────────────────
-section "1. Network & Port Detection"
+# ── 1. Detect Dynamic & Public IP ─────────────────────────────
+section "1. Network & Public IP Detection"
 TARGET_PORT="${PORT:-80}"
-HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
+
+# 1. Try GCP Compute Engine metadata server first
+DETECTED_IP=$(curl -s -m 2 -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip" 2>/dev/null | tr -d '[:space:]' || true)
+
+# 2. Fallback to public IP lookup services
+if [ -z "$DETECTED_IP" ]; then
+    DETECTED_IP=$(curl -s --max-time 3 ip.me 2>/dev/null | tr -d '[:space:]' || true)
+fi
+if [ -z "$DETECTED_IP" ]; then
+    DETECTED_IP=$(curl -s --max-time 3 ifconfig.me 2>/dev/null | tr -d '[:space:]' || true)
+fi
+if [ -z "$DETECTED_IP" ]; then
+    DETECTED_IP=$(curl -s --max-time 3 icanhazip.com 2>/dev/null | tr -d '[:space:]' || true)
+fi
+
+# 3. Fallback to LAN host IP
+if [ -z "$DETECTED_IP" ]; then
+    DETECTED_IP=$(hostname -I 2>/dev/null | awk '{print $1}' | tr -d '[:space:]' || true)
+fi
+[ -z "$DETECTED_IP" ] && DETECTED_IP="127.0.0.1"
+
 log "Configured Web Port: ${TARGET_PORT}"
-log "Detected Host IP:    ${HOST_IP}"
+log "Public / Host IP:    ${DETECTED_IP}"
 
 # ── 2. Pre-flight Checks ─────────────────────────────────────
 section "2. Pre-flight Environment Checks"
@@ -183,10 +203,21 @@ echo -e "${GREEN}${BOLD}========================================================
 echo -e "Total Deployment Time: $(format_duration $TOTAL_TIME)\n"
 
 echo -e "${BOLD}Access Endpoints:${RESET}"
-echo -e "  • Web Application:      ${CYAN}http://localhost:${TARGET_PORT}${RESET} (or http://${HOST_IP}:${TARGET_PORT})"
-echo -e "  • Interactive API Docs: ${CYAN}http://localhost:${TARGET_PORT}/docs${RESET}"
-echo -e "  • Health Endpoint:      ${CYAN}http://localhost:${TARGET_PORT}/api/v1/health${RESET}"
-echo -e "  • MinIO Web Console:    ${CYAN}http://localhost:9001${RESET} (User: minioadmin / Pass: minioadminpassword)\n"
+if [ "$TARGET_PORT" = "80" ]; then
+    echo -e "  • Web Application:      ${CYAN}http://${DETECTED_IP}${RESET} (or http://localhost)"
+    echo -e "  • Interactive API Docs: ${CYAN}http://${DETECTED_IP}/docs${RESET}"
+    echo -e "  • Health Endpoint:      ${CYAN}http://${DETECTED_IP}/api/v1/health${RESET}"
+else
+    echo -e "  • Web Application:      ${CYAN}http://${DETECTED_IP}:${TARGET_PORT}${RESET} (or http://localhost:${TARGET_PORT})"
+    echo -e "  • Interactive API Docs: ${CYAN}http://${DETECTED_IP}:${TARGET_PORT}/docs${RESET}"
+    echo -e "  • Health Endpoint:      ${CYAN}http://${DETECTED_IP}:${TARGET_PORT}/api/v1/health${RESET}"
+fi
+echo -e "  • MinIO Web Console:    ${CYAN}http://${DETECTED_IP}:9001${RESET} (User: minioadmin / Pass: minioadminpassword)\n"
+
+echo -e "${YELLOW}${BOLD}[IMPORTANT FOR GCP DEPLOYMENTS]:${RESET}"
+echo -e "If you cannot connect from your browser at ${CYAN}http://${DETECTED_IP}${RESET}, ensure the GCP Firewall permits ingress on TCP port 80 and 9001:"
+echo -e "  • GCP Console: Compute Engine -> VM instances -> Edit 'ajaia' -> Check 'Allow HTTP traffic' -> Save"
+echo -e "  • Or run: gcloud compute firewall-rules create allow-http-80 --allow tcp:80,tcp:9001 --source-ranges 0.0.0.0/0\n"
 
 echo -e "${BOLD}Seeded Reviewer Accounts (1-Click Switcher in Navbar):${RESET}"
 echo -e "  1. ${BOLD}Alice Johnson (Owner):${RESET}        alice@ajaia.test"
