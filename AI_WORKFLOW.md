@@ -19,8 +19,9 @@ During this sprint, I utilized an integrated AI-native stack:
 AI was leveraged as a force multiplier in high-friction, repetitive areas:
 
 1. **Test Suite Generation (Pytest):**
-   - AI generated edge-case matrix scenarios: verifying that unshared documents return `403 Forbidden`, testing permission role escalation, and mocking MinIO client methods during isolated unit testing.
-   - **Time Saved:** ~45 minutes.
+   - AI generated edge-case matrix scenarios: verifying that unshared documents return `403 Forbidden`, testing permission role escalation, mocking MinIO client methods during isolated unit testing, atomic multi-file upload rollbacks, and XSS sanitization.
+   - Expanded into a hardened **29-test suite** running deterministically in under 1.2s.
+   - **Time Saved:** ~60 minutes.
 
 2. **Quill.js Toolbar & Custom CSS Configuration:**
    - Rapidly generating the HTML toolbar configuration, custom icon bindings, and Google Docs "paper sheet" CSS styling with proper box-shadows and container constraints.
@@ -50,15 +51,28 @@ Product judgment was strictly applied to filter hallucinated, fragile, or over-e
    - The initial AI-generated schema omitted `ondelete="CASCADE"` on `DocumentShare` and `Document` foreign keys, which would cause foreign key violation crashes if an owner deleted a document that had active shares.
    - **Correction:** Manually enforced `ondelete="CASCADE"` across all relational models.
 
+4. **Rejected: AI-Generated Regex/Bleach HTML Sanitizer in Favor of Mozilla/Rust `nh3`:**
+   - The AI initially produced a basic regex tag stripper and suggested deprecated `bleach` for XSS protection.
+   - **Reason for Rejection:** Regex sanitizers are easily bypassed by obfuscated HTML attributes, mutated XSS vectors, and malformed tags. `bleach` is deprecated and slow.
+   - **Correction:** Implemented defense-in-depth sanitization using `nh3` (Mozilla's Rust `ammonia` library) with an explicit element allowlist and protocol neutralization for `javascript:` URIs.
+
+5. **Fixed: Autosave Race Conditions on View & Persona Transitions:**
+   - The AI-generated autosave logic set a simple debounce timer. When users rapidly switched documents or toggled personas, queued changes were either lost or overwritten against the wrong document ID.
+   - **Correction:** Implemented `flushPendingSave()` called synchronously before route transitions, a `state.saveQueued` concurrency lock, and a window `beforeunload` listener to flush dirty buffers.
+
+6. **Fixed: Pydantic Email Validation on RFC 2606 Test Domains:**
+   - The AI recommended `pydantic.EmailStr` (backed by `email-validator`), which crashed on `alice@ajaia.test` because standard ICANN DNS lookups disallow `.test` top-level domains.
+   - **Correction:** Enforced an RFC-compliant regex pattern validator that validates email structure while permitting RFC 2606 test domains (`.test`, `.example`).
+
 ---
 
 ## 4. Verification, Reliability, & Engineering Quality
 
 To ensure AI suggestions did not compromise system reliability:
 
-1. **Automated Unit Testing:**
+1. **Automated Unit Testing (29 Passing Tests):**
    - Every single backend endpoint is backed by an automated test in `backend/tests/test_api.py`.
-   - Tests assert not just 200 OK responses, but negative security boundaries (403 Forbidden on unshared docs, 403 on viewer edit attempts).
+   - Tests assert not just 200 OK responses, but negative security boundaries (401 unauthenticated, 403 Forbidden on unshared docs, 403 on viewer edit attempts, 413 file size ceilings, XSS neutralization, and atomic batch rollback).
 
 2. **Dual-Write Rollback Verification:**
    - Verified that if a database transaction fails after uploading an object to MinIO, a compensating `delete_file` call prevents orphaned storage bloat.

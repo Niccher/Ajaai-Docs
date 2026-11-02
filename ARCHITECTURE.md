@@ -81,20 +81,61 @@ The relational schema is normalized with foreign key constraints and cascade rul
 
 ---
 
-## 4. Deliberate Scope Cuts & Tradeoffs
+## 4. Security Architecture & Hardening
 
-| Feature | Decision | Engineering Justification |
+1. **Defense-in-Depth HTML Sanitization (Rust `nh3`):**
+   - User content submitted from Quill.js is passed through `backend/security.py` using `nh3` (Python bindings to Mozilla's Rust `ammonia` library).
+   - Strict allowlist of safe HTML elements (`<p>`, `<h1>`-`<h6>`, `<strong>`, `<em>`, `<u>`, `<s>`, `<a>`, `<ul>`, `<ol>`, `<li>`, `<blockquote>`, `<pre>`, `<code>`).
+   - Dangerous tags (`<script>`, `<iframe>`, `<object>`, `<embed>`) and inline event handlers (`onload`, `onerror`, `onclick`) are completely stripped.
+   - Links are restricted to `http`, `https`, and `mailto` protocols with automatic `rel="noopener noreferrer"` injection, neutralizing `javascript:` URI attacks.
+
+2. **HTTP Security Headers Middleware:**
+   - Injected on every response via `SecurityHeadersMiddleware`:
+     - `Content-Security-Policy`: Restricts scripts, styles, and fonts to trusted CDN origins (Bootstrap, Quill, Google Fonts).
+     - `X-Content-Type-Options: nosniff`: Prevents MIME-confusion attacks.
+     - `X-Frame-Options: DENY`: Blocks clickjacking in framing contexts.
+     - `Referrer-Policy: strict-origin-when-cross-origin`: Minimizes referrer leakage.
+
+3. **Subresource Integrity (SRI):**
+   - CDN assets in `frontend/templates/index.html` (Bootstrap 5.3, Bootstrap Icons, Quill 2.0.2) include verified SHA-384 cryptographic integrity hashes and `crossorigin="anonymous"`.
+
+4. **Multi-Stage Container Hardening:**
+   - Two-stage `Dockerfile`: Stage 1 compiles wheel dependencies; Stage 2 builds a minimal runtime image.
+   - Runs as non-root user `appuser` (UID 1001).
+   - Built-in `HEALTHCHECK` probing `/api/v1/health` ensures container orchestration detects unresponsiveness.
+
+5. **Configurable CORS:**
+   - Dynamic CORS origin resolution via `CORS_ORIGINS` environment variable (defaults to `http://localhost:5588,http://localhost:8000,http://127.0.0.1:5588,http://127.0.0.1:8000,http://testserver`).
+
+---
+
+## 5. Deliberate Scope Cuts & Tradeoffs
+
+| Feature / Setting | Decision | Engineering Justification |
 | :--- | :--- | :--- |
 | **Real-Time CRDT / WebSockets** | **Cut** | Building collaborative multi-cursor presence (e.g. Yjs / Automerge) requires 20+ hours of operational transformation logic and connection state management. Under 4-6 hours, it frequently causes ghost states and sync bugs. Debounced autosave (800ms) with explicit revision timestamps was chosen for rock-solid stability. |
-| **OAuth2 / Magic Links** | **Cut** | Setting up Google OAuth or email SMTP verification requires third-party credentials and slows down evaluation. A persona toggle with seeded accounts (`Alice` and `Bob`) allows reviewers to evaluate sharing rules in 5 seconds without sign-up hurdles. |
+| **OAuth2 / Magic Links** | **Simulated Header Auth** | Setting up Google OAuth or email SMTP verification requires third-party credentials and slows down evaluation. A persona toggle with seeded accounts (`Alice` and `Bob`) via `X-User-Email` allows reviewers to evaluate sharing rules in 5 seconds without sign-up hurdles. Returns `401 Unauthorized` for missing/unknown emails. |
+| **Exposed Ports (5432, 9000/9001)** | **Exposed for Reviewers** | In a production cloud deployment, Postgres and MinIO remain internal to a private Docker network. In this assessment, ports are published to host (`5432`, `9001`) specifically so hiring reviewers can inspect database rows via TablePlus/DBeaver and uploaded files via the MinIO Web Console. |
 | **Complex Binary Ingestion (.docx, .pdf)** | **Cut** | Parsing proprietary binary schemas requires heavyweight Java/Node runtimes or external conversion microservices. Supporting `.md` and `.txt` with S3 storage delivers immediate product value with zero external bloat. |
 
 ---
 
-## 5. What I Would Build Next (With 2–4 Additional Hours)
+## 6. Automated Test Suite & Quality Assurance
 
-If allocated additional time, I would implement:
+The codebase is backed by **29 comprehensive Pytest test cases** (`backend/tests/test_api.py`) executed against an isolated SQLite test database with mocked S3 operations, achieving 100% pass rate:
+- **Authentication & Personas (4 tests):** Seeded personas, 401 on missing header, 401 on unknown persona, `/me` profile.
+- **Document CRUD & Validation (4 tests):** Creation, empty title 422, >255 char title 422, non-existent 404.
+- **Access Control & Permissions (5 tests):** 403 on unshared docs, sharing workflow, 403 on viewer edit attempt, 403 on editor delete attempt, owner deletion.
+- **Share Management (3 tests):** Self-sharing rejection 400, invalid email formatting 422, revoking permissions.
+- **Security & XSS (4 tests):** `<script>` tag stripping, `javascript:` protocol neutralization, security headers presence, OpenAPI security scheme.
+- **File Uploads & Ceilings (5 tests):** Single file upload, unsupported file type 400, 20 MB size ceiling 413, batch upload, atomic rollback on failure.
+- **Export & Health (4 tests):** HTML-to-Markdown export, HTML-to-Text export, native download 404, `/health` endpoint.
+
+---
+
+## 7. What I Would Build Next (With 2–4 Additional Hours)
+
 1. **Document Version History & Rollback:** Snapshotting document revisions to a `document_versions` table on manual save or hourly intervals, allowing users to restore past drafts.
-2. **Export to PDF / Markdown:** Using headless HTML-to-PDF rendering to let users download formatted documents.
+2. **Export to PDF:** While Markdown, Plain Text, and HTML export are now complete, headless PDF generation via Weasyprint would provide formatted printable documents.
 3. **Comments & Mention System:** Threaded comments tied to specific text highlights with `@persona` notifications.
 4. **Live Presence Badges:** Lightweight WebSockets broadcasting which collaborators currently have the document open (presence indicators without full CRDT complexity).

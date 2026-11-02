@@ -1,3 +1,13 @@
+# ==============================================================================
+# Docker Compose Configuration - Ajaia Collaborative Document Editor
+#
+# NOTE ON SECURITY & REVIEWER CONVENIENCE:
+# - Ports 5432 (Postgres) and 9000/9001 (MinIO S3 / Console) are published to the host
+#   specifically to allow reviewers to inspect DB tables and S3 blobs directly.
+# - In a production cloud deployment, these services remain isolated within an internal
+#   private Docker network with rotated credentials managed by a Secrets Manager.
+# ==============================================================================
+
 services:
   db:
     image: postgres:16-alpine
@@ -8,7 +18,7 @@ services:
       POSTGRES_PASSWORD: postgrespassword
       POSTGRES_DB: ajaia_docs
     ports:
-      - "5432:5432"
+      - "5432:5432" # Exposed for local reviewer inspection via TablePlus / DBeaver
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -26,8 +36,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadminpassword
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9000:9000" # S3 API endpoint
+      - "9001:9001" # MinIO Web Console UI
     volumes:
       - minio_data:/data
 
@@ -41,7 +51,7 @@ services:
       - "${PORT:-5588}:8000"
     command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
-      - ./backend:/app/backend
+      - ./backend:/app/backend # Live reload development bind mount
       - ./frontend:/app/frontend
     environment:
       - DATABASE_URL=postgresql://postgres:postgrespassword@db:5432/ajaia_docs
@@ -50,6 +60,7 @@ services:
       - MINIO_SECRET_KEY=minioadminpassword
       - MINIO_BUCKET=ajaia-documents
       - MINIO_SECURE=false
+      - CORS_ORIGINS=http://localhost:5588,http://localhost:8000,http://127.0.0.1:5588,http://127.0.0.1:8000
     depends_on:
       db:
         condition: service_healthy

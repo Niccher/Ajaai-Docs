@@ -101,11 +101,22 @@ app = FastAPI(
 
 # Security and CORS Middlewares
 app.add_middleware(SecurityHeadersMiddleware)
+
+cors_origins_raw = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:5588,http://localhost:8000,http://127.0.0.1:5588,http://127.0.0.1:8000,http://testserver"
+)
+allowed_origins = (
+    ["*"]
+    if cors_origins_raw.strip() == "*"
+    else [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=allowed_origins,
+    allow_credentials=True if "*" not in allowed_origins else False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
