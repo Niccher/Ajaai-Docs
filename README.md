@@ -3,7 +3,8 @@
 A lightweight, production-grade collaborative document editor inspired by Google Docs, built for the **Ajaia AI-Native Full Stack Product Engineer** evaluation.
 
 ![Ajaia Docs Banner](https://img.shields.io/badge/Architecture-FastAPI%20%2B%20PostgreSQL%20%2B%20MinIO%20%2B%20Bootstrap-blue)
-![Tests](https://img.shields.io/badge/Tests-Pytest%20100%25%20Passing-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-29%2F29%20Pytest%20Passing-brightgreen)
+![Security](https://img.shields.io/badge/Security-Rust%20nh3%20%2B%20CSP%20%2B%20RBAC-success)
 ![Docker](https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED)
 
 ---
@@ -11,32 +12,36 @@ A lightweight, production-grade collaborative document editor inspired by Google
 ## 🌟 Key Capabilities
 
 1. **Rich-Text Document Editing:**
-   - Powered by Quill.js with custom Google Docs styling.
+   - Powered by Quill.js with Google Docs-inspired clean paper canvas styling.
    - Formatting: **Bold**, *Italic*, <u>Underline</u>, Strikethrough, Headings (H1, H2, H3), Bulleted Lists, Numbered Lists, Blockquotes, and Code blocks.
    - Debounced autosave (800ms) with visual status indicator (`Saving...` / `Saved`).
-   - Dynamic document title renaming directly in the navigation bar.
+   - Race-condition hardened: `saveQueued` lock flag serializes concurrent in-flight updates, and `flushPendingSave()` guarantees no data loss when switching views or personas.
+   - Inline document title renaming directly in the navigation bar with 255-character length validation.
 
-2. **File Ingestion with MinIO S3 Storage:**
-   - Drag & drop or upload `.md` (Markdown) and `.txt` (Plain text) files.
+2. **File Ingestion with MinIO S3 Object Storage:**
+   - Drag & drop or batch upload `.md` (Markdown) and `.txt` (Plain text) files up to **20MB per file**.
+   - **Atomic Batch Validation:** Pre-validates file types and sizes across the entire batch before writing to MinIO or PostgreSQL.
    - Raw uploaded files are preserved in **MinIO S3 Object Storage** (`ajaia-documents` bucket).
-   - Ingested files are automatically parsed into the document's rich HTML AST for immediate editing.
-   - Download the original file anytime from the editor view.
+   - Ingested files are automatically parsed into editable HTML for immediate rich-text modification.
+   - Download the original raw file directly from MinIO or export as Markdown (`.md`), Plain Text (`.txt`), or HTML (`.html`).
 
 3. **Role-Based Sharing Model & Persona Switcher:**
    - Multi-tenant isolation: Clear UI separation between **"My Documents"** (owned) and **"Shared with Me"** (collaborative).
    - One-click **Persona Switcher** in the top navbar:
      - 👤 **Alice Johnson** (`alice@ajaia.test` — Owner persona)
      - 👤 **Bob Smith** (`bob@ajaia.test` — Collaborator / Reviewer persona)
-   - Granular permission levels: **Editor** (read/write) vs. **Viewer** (read-only enforcement).
+   - Granular permission levels: **Editor** (read/write) vs. **Viewer** (read-only enforcement in both backend API and Quill UI).
    - Instant permission revocation by document owner.
 
-4. **Persistence & Relational Integrity:**
-   - Backed by **PostgreSQL 16** with foreign key constraints, cascade deletes, and relational integrity.
-   - Persistent Docker volume guarantees data survives container restarts.
+4. **Hardened Security & Modular Architecture:**
+   - **HTML Sanitization:** Mozilla/Rust-backed `nh3` allowlist sanitizer strips `<script>`, inline event handlers (`onclick`, `onerror`), and `javascript:` URIs.
+   - **Defense-in-Depth HTTP Headers:** Injects `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: strict-origin-when-cross-origin`.
+   - **Alembic Database Migrations:** Programmatic Alembic migrations execute automatically on startup before seeding.
 
-5. **API Contract & Versioning:**
-   - Strict versioning under `/api/v1/...`.
-   - Automatic interactive Swagger API documentation at `http://localhost:8000/docs`.
+5. **API Contract & Interactive Swagger Authentication:**
+   - Versioned API under `/api/v1/...`.
+   - Swagger OpenAPI UI at `http://localhost:5588/docs` featuring the green **Authorize** button powered by `APIKeyHeader(name="X-User-Email")`.
+   - Strict `401 Unauthorized` responses on missing or unseeded personas.
 
 ---
 
@@ -53,10 +58,25 @@ cd Ajaia
 bash scripts/deploy.sh
 ```
 
-That's it! All 3 containers will automatically boot and perform healthchecks:
+That's it! All 3 containers automatically boot, verify dependencies, run migrations, seed data, and execute preflight checks:
 - **Web App & Editor:** [http://localhost:5588](http://localhost:5588) *(Configurable via `PORT` env var, defaults to 5588)*
 - **Interactive Swagger Docs:** [http://localhost:5588/docs](http://localhost:5588/docs)
+- **Service Healthcheck:** [http://localhost:5588/api/v1/health](http://localhost:5588/api/v1/health)
 - **MinIO S3 Console:** [http://localhost:9001](http://localhost:9001) *(User: `minioadmin`, Pass: `minioadminpassword`)*
+
+---
+
+## 🔐 Swagger UI & API Authentication
+
+When testing the interactive Swagger documentation at [http://localhost:5588/docs](http://localhost:5588/docs):
+
+1. Click the green **Authorize** button at the top-right.
+2. In the `Value` field for **APIKeyHeader (apiKey)**, enter one of the test personas:
+   - `alice@ajaia.test`
+   - `bob@ajaia.test`
+3. Click **Authorize**, then **Close**.
+4. You can now execute any endpoint (e.g., `POST /api/v1/documents`, `POST /api/v1/documents/upload`, `GET /api/v1/documents`) directly from Swagger UI!
+5. Requests without an authorized header return `401 Unauthorized`.
 
 ---
 
@@ -76,57 +96,43 @@ pip install -r requirements.txt
 export DATABASE_URL="sqlite:///./ajaia_docs.db"
 
 # 4. Start the server
-uvicorn backend.main:app --reload --port 8000
+uvicorn backend.main:app --reload --port 5588
 ```
-Open [http://localhost:8000](http://localhost:8000) in your browser.
+Open [http://localhost:5588](http://localhost:5588) in your browser.
 
 ---
 
 ## 🧪 Running Automated Tests
 
-A comprehensive Pytest test suite verifies access boundaries, sharing permissions, and file ingestion:
+A comprehensive suite of **29 automated tests** verifies access boundaries, sharing permissions, XSS sanitization, atomic upload rollbacks, and exports:
 
 ```bash
 source .venv/bin/activate
 pytest backend/tests/test_api.py -v
 ```
 
-### Test Suite Coverage:
-- `test_seeded_personas`: Verifies test personas (Alice & Bob) are initialized.
-- `test_create_document`: Validates document instantiation and owner assignment.
-- `test_document_access_isolation_forbidden`: Asserts Bob receives `403 Forbidden` on Alice's private unshared doc.
-- `test_sharing_workflow_grants_access`: Verifies sharing grants read/write permissions and updates partitioned lists.
-- `test_read_only_viewer_cannot_edit`: Asserts `403 Forbidden` when a viewer attempts document edits.
-- `test_file_upload_markdown_conversion`: Tests `.md` parsing into rich HTML AST and MinIO persistence.
-- `test_delete_access_control`: Asserts only the document owner can delete documents.
+### Test Suite Summary (29/29 Passing):
+- **Authentication:** Seeded personas, 401 on missing `X-User-Email`, 401 on unknown personas, `GET /api/v1/users/me`.
+- **Validation:** 255-character title limit, empty title rejection, 404 on missing documents.
+- **RBAC & Sharing:** 403 isolation on unshared documents, collaborative read/write grants, read-only viewer modification blocks, non-owner delete restrictions, owner delete rights, self-share prevention, invalid email rejection, share revocation.
+- **Security & XSS:** Script tag stripping, event handler neutralization, `javascript:` protocol elimination, defense-in-depth security headers, and OpenAPI security scheme presence.
+- **Uploads & Exports:** Markdown conversion, plain text ingestion, 400 on unsupported extensions, 413 on oversized files (>20MB), multi-file batch uploads, atomic batch validation rollback on error, Markdown export with list preservation, Plain text export, and MinIO raw download.
 
 ---
 
-## 🧭 Reviewer Guide: Testing the 4 Core Flows
+## ⚠️ Known Security Limitations & Local Dev Trade-offs
 
-1. **Test Editing & Autosave:**
-   - Logged in as **Alice Johnson** (default).
-   - Click **"New Document"**.
-   - Edit the title to *"Q4 Strategy Brief"*.
-   - Add rich text: Heading 1, bold text, bullet list.
-   - Notice the badge changes from `Saving...` to `Saved`. Refresh the browser—your content is preserved!
+This project is tailored for a rapid, friction-free take-home evaluation. The following architectural decisions were intentional for local assessment:
 
-2. **Test File Upload (.md / .txt):**
-   - Return to dashboard and click **"Import (.md, .txt)"** or drag-and-drop a markdown file.
-   - The file is saved to MinIO object storage and converted into a rich-text document ready to edit.
-
-3. **Test Sharing & Permissions:**
-   - In your new document, click the blue **"Share"** button.
-   - Select `bob@ajaia.test` with permission **"Editor"** and click **Invite**.
-   - Switch personas: In the top-right navbar dropdown, switch to **Bob Smith**.
-   - Under **"Shared with Me"**, the document appears immediately!
-   - Open it as Bob and make an edit.
-   - Switch back to Alice: The updates are reflected.
-
-4. **Test Access Control (403 Isolation):**
-   - As Alice, create a document *"Alice Private Notes"* and do **not** share it.
-   - Switch to Bob. Notice the document is nowhere in Bob's dashboard.
-   - If Bob attempts to query the document ID directly via API, the system rejects it with `403 Forbidden`.
+1. **Exposed Local Ports (5432 & 9000/9001):**
+   - *Local Rationale:* PostgreSQL (`5432`) and MinIO Console (`9001`) are bound to `0.0.0.0` so reviewers can directly inspect database tables (via TablePlus/DBeaver) and S3 buckets (via browser).
+   - *Production Hardening:* In production, database and object storage ports are placed exclusively on an internal private Docker bridge network (`internal: true`) and never exposed to the host network.
+2. **Default Credentials in Docker Compose:**
+   - *Local Rationale:* Default credentials (`postgrespassword`, `minioadminpassword`) are provided in `.env.example` and `docker-compose.yml` to allow zero-config execution.
+   - *Production Hardening:* Use an external secrets manager (AWS Secrets Manager, HashiCorp Vault, or Kubernetes Secrets) with rotation policies.
+3. **Persona-Based Authentication (`X-User-Email`):**
+   - *Local Rationale:* High-leverage 1-click persona switcher avoids the UX friction of full password-login screens or external OAuth setup during a timed review.
+   - *Production Hardening:* Replace `X-User-Email` with signed JWTs (RS256) issued via an OpenID Connect (OIDC) provider (Auth0, Okta, Google OAuth) with HTTP-only, Secure cookies and CSRF tokens.
 
 ---
 
@@ -134,24 +140,34 @@ pytest backend/tests/test_api.py -v
 
 ```
 Ajaia/
-├── docker-compose.yml       # Orchestrates Web, PostgreSQL, and MinIO
-├── Dockerfile               # Python 3.11-slim container
-├── requirements.txt         # Pinned production dependencies
-├── .env.example             # Configuration template
+├── docker-compose.yml       # Orchestrates Web (5588), PostgreSQL 16 (5432), and MinIO (9000/9001)
+├── Dockerfile               # Python 3.11-slim container with multi-stage layer caching
+├── requirements.txt         # Pinned production dependencies (FastAPI, SQLAlchemy, nh3, MinIO)
+├── requirements-dev.txt     # Test dependencies (pytest, httpx)
+├── alembic.ini              # Alembic database migration configuration
+├── alembic/                 # Schema migration versions
+│   └── versions/
+│       └── 001_initial_schema.py
 ├── backend/
-│   ├── main.py              # FastAPI application, /api/v1 routes & static mounting
+│   ├── main.py              # Modular FastAPI endpoints, batch upload, and static routes
+│   ├── security.py          # Rust-backed nh3 sanitizer & SecurityHeadersMiddleware
+│   ├── converters.py        # HTML-to-Markdown, HTML-to-Text, and File-to-HTML transformers
+│   ├── deps.py              # APIKeyHeader, get_current_user, and RBAC authorization helpers
 │   ├── models.py            # SQLAlchemy relational models (User, Document, DocumentShare)
-│   ├── database.py          # PostgreSQL/SQLite connection & auto-seeding
-│   ├── schemas.py           # Pydantic v2 schemas
+│   ├── database.py          # Connection pool, Alembic auto-upgrade, and persona seeding
+│   ├── schemas.py           # Pydantic v2 schemas with title limits & email validation
 │   ├── storage.py           # MinIO S3 object storage driver
 │   └── tests/
-│       └── test_api.py      # Automated Pytest test suite
+│       ├── conftest.py      # Shared test fixtures & MinIO mock storage
+│       └── test_api.py      # 29 automated Pytest test cases
 ├── frontend/
 │   ├── templates/
-│   │   └── index.html       # Single-page UI with Bootstrap 5.3 & Quill.js
+│   │   └── index.html       # Single-page UI with Bootstrap 5.3, Quill.js & SRI hashes
 │   └── static/
-│       ├── css/style.css    # Google Docs paper canvas & layout styles
-│       └── js/app.js        # Autosave, Quill controller & API communications
+│       ├── css/style.css    # Google Docs paper canvas & layout styling
+│       └── js/app.js        # Autosave, flushPendingSave, saveQueued lock & API communications
+├── scripts/
+│   └── deploy.sh            # One-click 10-step automated build and preflight deployment script
 ├── docs/
 │   └── audit.md             # Formal System Architecture & Resource Audit
 ├── ARCHITECTURE.md          # Architectural decisions & scope tradeoff notes

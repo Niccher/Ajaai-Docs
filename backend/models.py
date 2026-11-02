@@ -1,9 +1,13 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
 
 
 class User(Base):
@@ -12,7 +16,7 @@ class User(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     email = Column(String(255), unique=True, nullable=False, index=True)
     name = Column(String(255), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
 
     # Relationships
     documents = relationship("Document", back_populates="owner", cascade="all, delete-orphan")
@@ -29,8 +33,8 @@ class Document(Base):
     owner_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     minio_object_key = Column(String(512), nullable=True)
     file_type = Column(String(50), nullable=True, default="native")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now)
 
     # Relationships
     owner = relationship("User", back_populates="documents")
@@ -44,7 +48,7 @@ class DocumentShare(Base):
     document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     permission = Column(String(20), nullable=False, default="edit")  # 'edit' or 'view'
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utc_now)
 
     __table_args__ = (
         UniqueConstraint("document_id", "user_id", name="uq_document_user_share"),

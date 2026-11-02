@@ -1,13 +1,20 @@
 /**
- * Ajaia Collaborative Document Editor
- * Frontend Application Logic (Vanilla JS + Bootstrap 5.3 + Quill.js)
- * Hardened against DOM-XSS, supporting batch uploads (20MB) and Markdown/Text exports.
+ * Ajaia Collaborative Document Editor - Frontend Application Logic
+ *
+ * Implements Google Docs-inspired rich text editing with Quill.js, persona switching,
+ * real-time debounced autosave with race-condition prevention (saveQueued + flushPendingSave),
+ * batch file ingestion (up to 20MB), MinIO raw downloads, and Markdown/Text exports.
  */
 
 document.addEventListener("DOMContentLoaded", () => {
   // ----------------------------------------------------
   // Security Helper: DOM-XSS Escaping
   // ----------------------------------------------------
+  /**
+   * Escape untrusted text for safe HTML string interpolation.
+   * @param {string} str
+   * @returns {string}
+   */
   function escapeHtml(str) {
     if (!str) return "";
     return String(str)
@@ -30,6 +37,7 @@ document.addEventListener("DOMContentLoaded", () => {
     currentDoc: null,
     saveDebounceTimer: null,
     isSaving: false,
+    saveQueued: false,
     hasPendingChanges: false,
   };
 
@@ -87,13 +95,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function showToast(msg, isError = false) {
     toastMessage.textContent = msg;
-    toastEl.className = `toast align-items-center text-white ${isError ? 'bg-danger' : 'bg-dark'} border-0 shadow`;
+    toastEl.className = `toast align-items-center text-white ${isError ? "bg-danger" : "bg-dark"} border-0 shadow`;
     toast.show();
   }
 
   // ----------------------------------------------------
   // HTTP Fetch Wrapper with Persona Header
   // ----------------------------------------------------
+  /**
+   * Execute an authenticated API request with X-User-Email header.
+   * @param {string} url
+   * @param {RequestInit} [options={}]
+   * @returns {Promise<any>}
+   */
   async function apiFetch(url, options = {}) {
     const headers = {
       "X-User-Email": state.activeUser.email,
@@ -143,6 +157,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  /**
+   * Debounces document autosaving by 800ms while user is actively typing.
+   */
   function scheduleAutoSave() {
     setSaveStatus("saving");
     state.hasPendingChanges = true;
@@ -152,6 +169,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }, 800);
   }
 
+  /**
+   * Updates the UI badge displaying cloud sync state.
+   * @param {'saving'|'saved'|'error'} status
+   */
   function setSaveStatus(status) {
     if (status === "saving") {
       saveStatus.className = "badge rounded-pill bg-light text-warning border px-2 py-1";
@@ -166,10 +187,27 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // ----------------------------------------------------
-  // Document Save Implementation
+  // Robust Save Implementation (Race-Condition Free)
   // ----------------------------------------------------
+  /**
+   * Immediately flush any debounced or pending save before view transitions.
+   */
+  async function flushPendingSave() {
+    if (state.saveDebounceTimer) {
+      clearTimeout(state.saveDebounceTimer);
+      state.saveDebounceTimer = null;
+    }
+    if (state.hasPendingChanges && state.currentDoc && state.currentDoc.permission !== "view") {
+      await saveCurrentDocument();
+    }
+  }
+
+  /**
+   * Persists active document title and HTML content to the backend.
+   * Uses state.saveQueued to serialize concurrent in-flight requests.
+   */
   async function saveCurrentDocument() {
-    if (!state.currentDoc || state.isSaving) return;
+    if (!state.currentDoc) return;
 
     if (state.currentDoc.permission === "view") {
       setSaveStatus("saved");
@@ -177,7 +215,14 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    // If a save request is already in-flight, mark queued and avoid concurrent collision
+    if (state.isSaving) {
+      state.saveQueued = true;
+      return;
+    }
+
     state.isSaving = true;
+    state.saveQueued = false;
     const title = docTitleInput.value.trim() || "Untitled Document";
     const content_html = quill.root.innerHTML;
     const content_text = quill.getText();
@@ -200,8 +245,21 @@ document.addEventListener("DOMContentLoaded", () => {
       showToast(`Save failed: ${err.message}`, true);
     } finally {
       state.isSaving = false;
+      // If edits occurred while the previous save was in-flight, execute queued save immediately
+      if (state.saveQueued) {
+        state.saveQueued = false;
+        saveCurrentDocument();
+      }
     }
   }
+
+  // Window unload guard to prevent data loss
+  window.addEventListener("beforeunload", (e) => {
+    if (state.hasPendingChanges) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+  });
 
   // ----------------------------------------------------
   // User Persona Management
@@ -231,9 +289,9 @@ document.addEventListener("DOMContentLoaded", () => {
           ${isCurrent ? '<i class="bi bi-check-lg ms-2"></i>' : ''}
         </a>
       `;
-      li.addEventListener("click", (e) => {
+      li.addEventListener("click", async (e) => {
         e.preventDefault();
-        switchUserPersona(u);
+        await switchUserPersona(u);
       });
       personaList.appendChild(li);
     });
@@ -242,8 +300,15 @@ document.addEventListener("DOMContentLoaded", () => {
     activePersonaBadge.textContent = state.activeUser.email.includes("alice") ? "Owner" : "Reviewer";
   }
 
-  function switchUserPersona(user) {
+  /**
+   * Switch the active collaborator persona. Flushes pending saves before switching.
+   * @param {{email: string, name: string}} user
+   */
+  async function switchUserPersona(user) {
     if (user.email === state.activeUser.email) return;
+
+    // Flush any unsaved edits before persona changes
+    await flushPendingSave();
 
     state.activeUser = { email: user.email, name: user.name };
     localStorage.setItem("ajaia_active_user_email", user.email);
@@ -253,9 +318,9 @@ document.addEventListener("DOMContentLoaded", () => {
     showToast(`Switched active persona to ${user.name}`);
 
     if (state.currentDoc) {
-      openDocument(state.currentDoc.id);
+      await openDocument(state.currentDoc.id);
     } else {
-      loadDocuments();
+      await loadDocuments();
     }
   }
 
@@ -300,23 +365,22 @@ document.addEventListener("DOMContentLoaded", () => {
       const updatedDate = new Date(doc.updated_at).toLocaleDateString(undefined, {
         month: "short",
         day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
+        year: "numeric",
       });
 
-      const fileTypeBadge = doc.file_type === "markdown" 
-        ? '<span class="badge bg-info-subtle text-info border">Markdown</span>' 
-        : (doc.file_type === "plaintext" ? '<span class="badge bg-secondary-subtle text-secondary border">Text</span>' : '');
+      const fileTypeBadge = doc.file_type && doc.file_type !== "native"
+        ? `<span class="badge bg-secondary-subtle text-secondary text-uppercase">${escapeHtml(doc.file_type)}</span>`
+        : "";
 
-      const permissionPill = !isOwnedTab
-        ? `<span class="badge ${doc.permission === 'edit' ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning'} border">${doc.permission.toUpperCase()}</span>`
-        : '';
+      const permissionPill = isOwnedTab
+        ? `<span class="badge bg-light text-muted border">Owner</span>`
+        : `<span class="badge ${doc.permission === 'edit' ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning'}">${doc.permission === 'edit' ? 'Can Edit' : 'Read Only'}</span>`;
 
-      const safeTitle = escapeHtml(doc.title);
-      const safeOwner = escapeHtml(doc.owner_name || doc.owner_email);
+      const safeTitle = escapeHtml(doc.title || "Untitled Document");
+      const safeOwner = escapeHtml(doc.owner_name || doc.owner_email || "Unknown");
 
       col.innerHTML = `
-        <div class="card h-100 doc-card shadow-sm border bg-white">
+        <div class="card h-100 doc-card shadow-sm border" data-doc-id="${escapeHtml(doc.id)}">
           <div class="doc-icon-preview">
             <i class="bi bi-file-earmark-richtext fs-1 text-primary"></i>
           </div>
@@ -338,7 +402,8 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
       `;
 
-      col.querySelector(".doc-card").addEventListener("click", () => {
+      col.querySelector(".doc-card").addEventListener("click", async () => {
+        await flushPendingSave();
         openDocument(doc.id);
       });
 
@@ -355,8 +420,11 @@ document.addEventListener("DOMContentLoaded", () => {
       state.currentDoc = doc;
 
       docTitleInput.value = doc.title;
-      quill.root.innerHTML = doc.content_html || "";
+
+      // Silent Quill clipboard paste to prevent triggering spurious 'text-change' events
+      quill.clipboard.dangerouslyPasteHTML(doc.content_html || "", "silent");
       setSaveStatus("saved");
+      state.hasPendingChanges = false;
 
       const isOwner = doc.permission === "owner";
       const canEdit = isOwner || doc.permission === "edit";
@@ -377,7 +445,7 @@ document.addEventListener("DOMContentLoaded", () => {
         btnDownloadRawLink.classList.add("d-none");
       }
 
-      // Delete button: Only owner
+      // Delete & Share buttons: Only owner can access
       if (isOwner) {
         btnDeleteDoc.classList.remove("d-none");
         btnDeleteDoc.classList.add("d-flex");
@@ -401,7 +469,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  function showDashboard() {
+  async function showDashboard() {
+    await flushPendingSave();
     state.currentDoc = null;
     editorView.classList.add("d-none");
     navDocControls.classList.add("d-none");
@@ -421,124 +490,137 @@ document.addEventListener("DOMContentLoaded", () => {
         method: "POST",
         body: JSON.stringify({
           title: "Untitled Document",
-          content_html: "<p><br></p>",
+          content_html: "<p></p>",
         }),
       });
+      showToast("New document created");
       openDocument(newDoc.id);
-      showToast("New blank document created");
     } catch (err) {
-      showToast(`Error creating document: ${err.message}`, true);
+      showToast(`Failed to create document: ${err.message}`, true);
     } finally {
       btnCreateDoc.disabled = false;
     }
   });
 
+  btnBackToDashboard.addEventListener("click", async () => {
+    await showDashboard();
+  });
+
+  brandLink.addEventListener("click", async (e) => {
+    e.preventDefault();
+    await showDashboard();
+  });
+
   btnDeleteDoc.addEventListener("click", async () => {
     if (!state.currentDoc) return;
-    if (!confirm(`Are you sure you want to permanently delete "${state.currentDoc.title}"?`)) return;
+    if (!confirm(`Are you sure you want to permanently delete "${state.currentDoc.title}"?`)) {
+      return;
+    }
 
     try {
-      await apiFetch(`/api/v1/documents/${state.currentDoc.id}`, { method: "DELETE" });
+      btnDeleteDoc.disabled = true;
+      await apiFetch(`/api/v1/documents/${state.currentDoc.id}`, {
+        method: "DELETE",
+      });
       showToast("Document deleted successfully");
       showDashboard();
     } catch (err) {
-      showToast(`Error deleting document: ${err.message}`, true);
+      showToast(`Delete failed: ${err.message}`, true);
+    } finally {
+      btnDeleteDoc.disabled = false;
     }
   });
 
-  // Export triggers (Markdown, Text, HTML, MinIO raw)
-  btnExportMd.addEventListener("click", (e) => {
-    e.preventDefault();
+  // Export handlers
+  btnExportMd.addEventListener("click", () => {
     if (!state.currentDoc) return;
-    window.open(`/api/v1/documents/${state.currentDoc.id}/export?format=md&x_user_email=${encodeURIComponent(state.activeUser.email)}`, "_blank");
+    window.location.href = `/api/v1/documents/${state.currentDoc.id}/export?format=md&x_user_email=${encodeURIComponent(state.activeUser.email)}`;
   });
 
-  btnExportTxt.addEventListener("click", (e) => {
-    e.preventDefault();
+  btnExportTxt.addEventListener("click", () => {
     if (!state.currentDoc) return;
-    window.open(`/api/v1/documents/${state.currentDoc.id}/export?format=txt&x_user_email=${encodeURIComponent(state.activeUser.email)}`, "_blank");
+    window.location.href = `/api/v1/documents/${state.currentDoc.id}/export?format=txt&x_user_email=${encodeURIComponent(state.activeUser.email)}`;
   });
 
-  btnExportHtml.addEventListener("click", (e) => {
-    e.preventDefault();
+  btnExportHtml.addEventListener("click", () => {
     if (!state.currentDoc) return;
-    window.open(`/api/v1/documents/${state.currentDoc.id}/export?format=html&x_user_email=${encodeURIComponent(state.activeUser.email)}`, "_blank");
+    const blob = new Blob([state.currentDoc.content_html || ""], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${state.currentDoc.title || "document"}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
   });
 
   btnDownloadRawLink.addEventListener("click", (e) => {
     e.preventDefault();
-    if (!state.currentDoc || !state.currentDoc.minio_object_key) return;
-    window.open(`/api/v1/documents/${state.currentDoc.id}/raw?x_user_email=${encodeURIComponent(state.activeUser.email)}`, "_blank");
-  });
-
-  btnBackToDashboard.addEventListener("click", showDashboard);
-  brandLink.addEventListener("click", (e) => {
-    e.preventDefault();
-    showDashboard();
-  });
-
-  // ----------------------------------------------------
-  // Sharing Modal Implementation
-  // ----------------------------------------------------
-  btnOpenShare.addEventListener("click", renderShareModal);
-
-  function renderShareModal() {
     if (!state.currentDoc) return;
-    shareModalDocTitle.textContent = state.currentDoc.title;
-    shareEmailInput.value = "";
+    window.location.href = `/api/v1/documents/${state.currentDoc.id}/download-raw?x_user_email=${encodeURIComponent(state.activeUser.email)}`;
+  });
 
-    shareAccessList.innerHTML = `
-      <div class="list-group-item d-flex justify-content-between align-items-center py-2">
+  // ----------------------------------------------------
+  // Sharing Modal & Collaborators
+  // ----------------------------------------------------
+  btnOpenShare.addEventListener("click", () => {
+    if (!state.currentDoc) return;
+    shareModalDocTitle.textContent = `Sharing "${state.currentDoc.title}"`;
+    renderShareAccessList();
+  });
+
+  quickPickBob.addEventListener("click", () => {
+    shareEmailInput.value = "bob@ajaia.test";
+  });
+
+  quickPickAlice.addEventListener("click", () => {
+    shareEmailInput.value = "alice@ajaia.test";
+  });
+
+  function renderShareAccessList() {
+    if (!state.currentDoc) return;
+
+    let html = `
+      <div class="list-group-item d-flex justify-content-between align-items-center px-2 py-2">
         <div>
-          <span class="fw-semibold">${escapeHtml(state.currentDoc.owner_name)}</span>
-          <span class="text-muted small">(${escapeHtml(state.currentDoc.owner_email)})</span>
+          <div class="fw-medium text-dark">${escapeHtml(state.currentDoc.owner_name)} (${escapeHtml(state.currentDoc.owner_email)})</div>
+          <div class="text-muted small">Owner</div>
         </div>
-        <span class="badge bg-primary">Owner</span>
+        <span class="badge bg-primary-subtle text-primary">Owner</span>
       </div>
     `;
 
     if (state.currentDoc.shares && state.currentDoc.shares.length > 0) {
-      state.currentDoc.shares.forEach((share) => {
-        const item = document.createElement("div");
-        item.className = "list-group-item d-flex justify-content-between align-items-center py-2";
-        item.innerHTML = `
-          <div>
-            <span class="fw-semibold">${escapeHtml(share.user_name || share.user_email)}</span>
-            <span class="text-muted small">(${escapeHtml(share.user_email)})</span>
-            <span class="badge bg-secondary-subtle text-secondary ms-2">${escapeHtml(share.permission.toUpperCase())}</span>
+      state.currentDoc.shares.forEach((s) => {
+        html += `
+          <div class="list-group-item d-flex justify-content-between align-items-center px-2 py-2">
+            <div>
+              <div class="fw-medium text-dark">${escapeHtml(s.user_name || s.user_email)}</div>
+              <div class="text-muted small">${escapeHtml(s.user_email)} • ${s.permission === 'edit' ? 'Can edit' : 'Can view'}</div>
+            </div>
+            <button class="btn btn-outline-danger btn-xs py-1 px-2 btn-revoke-share" data-user-id="${escapeHtml(s.user_id)}">
+              <i class="bi bi-x-circle"></i> Revoke
+            </button>
           </div>
-          <button class="btn btn-sm btn-outline-danger py-0 px-2 btn-revoke" data-user-id="${share.user_id}">
-            <i class="bi bi-x"></i> Revoke
-          </button>
         `;
-
-        item.querySelector(".btn-revoke").addEventListener("click", async () => {
-          try {
-            await apiFetch(`/api/v1/documents/${state.currentDoc.id}/share/${share.user_id}`, {
-              method: "DELETE",
-            });
-            showToast(`Revoked access for ${share.user_email}`);
-            const refreshed = await apiFetch(`/api/v1/documents/${state.currentDoc.id}`);
-            state.currentDoc = refreshed;
-            renderShareModal();
-          } catch (err) {
-            showToast(`Error revoking access: ${err.message}`, true);
-          }
-        });
-
-        shareAccessList.appendChild(item);
       });
+    } else {
+      html += `
+        <div class="text-muted text-center py-3 small">
+          No collaborators added yet. Invite someone above!
+        </div>
+      `;
     }
-  }
 
-  quickPickBob.addEventListener("click", (e) => {
-    e.preventDefault();
-    shareEmailInput.value = "bob@ajaia.test";
-  });
-  quickPickAlice.addEventListener("click", (e) => {
-    e.preventDefault();
-    shareEmailInput.value = "alice@ajaia.test";
-  });
+    shareAccessList.innerHTML = html;
+
+    // Attach revoke event handlers
+    shareAccessList.querySelectorAll(".btn-revoke-share").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        const userId = e.currentTarget.getAttribute("data-user-id");
+        await revokeShareAccess(userId);
+      });
+    });
+  }
 
   shareForm.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -549,45 +631,53 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!email) return;
 
     try {
-      await apiFetch(`/api/v1/documents/${state.currentDoc.id}/share`, {
+      const shareRecord = await apiFetch(`/api/v1/documents/${state.currentDoc.id}/shares`, {
         method: "POST",
         body: JSON.stringify({ email, permission }),
       });
 
-      showToast(`Shared "${state.currentDoc.title}" with ${email} as ${permission}`);
-      const refreshed = await apiFetch(`/api/v1/documents/${state.currentDoc.id}`);
-      state.currentDoc = refreshed;
-      renderShareModal();
+      showToast(`Invited ${email} as ${permission}`);
+      shareEmailInput.value = "";
+
+      // Refresh current document state to show updated shares list
+      const refreshedDoc = await apiFetch(`/api/v1/documents/${state.currentDoc.id}`);
+      state.currentDoc = refreshedDoc;
+      renderShareAccessList();
     } catch (err) {
       showToast(`Failed to share: ${err.message}`, true);
     }
   });
 
+  async function revokeShareAccess(userId) {
+    if (!state.currentDoc) return;
+    try {
+      await apiFetch(`/api/v1/documents/${state.currentDoc.id}/shares/${userId}`, {
+        method: "DELETE",
+      });
+      showToast("Access revoked");
+      const refreshedDoc = await apiFetch(`/api/v1/documents/${state.currentDoc.id}`);
+      state.currentDoc = refreshedDoc;
+      renderShareAccessList();
+    } catch (err) {
+      showToast(`Revocation failed: ${err.message}`, true);
+    }
+  }
+
   // ----------------------------------------------------
-  // Batch File Upload Ingestion (MinIO S3 + Parser, 20MB)
+  // Batch File Ingestion (20MB) & MinIO Upload
   // ----------------------------------------------------
-  async function handleFileUpload(files) {
+  async function handleBatchFileUpload(files) {
     if (!files || files.length === 0) return;
 
-    const validFiles = Array.from(files).filter((file) => {
-      const ext = file.name.substring(file.name.lastIndexOf(".")).toLowerCase();
-      return ext === ".md" || ext === ".txt";
-    });
-
-    if (validFiles.length === 0) {
-      showToast("Unsupported file type. Please select .md or .txt files.", true);
-      return;
+    const formData = new FormData();
+    for (let i = 0; i < files.length; i++) {
+      formData.append("files", files[i]);
     }
 
-    const formData = new FormData();
-    validFiles.forEach((file) => {
-      formData.append("files", file);
-    });
-
-    uploadProgress.classList.remove("d-none");
-    btnSubmitUpload.disabled = true;
-
     try {
+      uploadProgress.classList.remove("d-none");
+      btnSubmitUpload.disabled = true;
+
       const result = await apiFetch("/api/v1/documents/upload", {
         method: "POST",
         body: formData,
@@ -595,14 +685,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
       uploadModal.hide();
       modalFileInput.value = "";
-      dragFileInput.value = "";
 
-      if (Array.isArray(result)) {
-        showToast(`Successfully imported ${result.length} documents!`);
-        openDocument(result[0].id);
+      if (Array.isArray(result) && result.length > 1) {
+        showToast(`Successfully imported ${result.length} files`);
+        await loadDocuments();
       } else {
-        showToast(`Imported "${result.title}" successfully into MinIO and Editor!`);
-        openDocument(result.id);
+        const docToOpen = Array.isArray(result) ? result[0] : result;
+        showToast(`Imported "${docToOpen.title}"`);
+        openDocument(docToOpen.id);
       }
     } catch (err) {
       showToast(`Import failed: ${err.message}`, true);
@@ -613,39 +703,44 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   btnSubmitUpload.addEventListener("click", () => {
-    if (!modalFileInput.files || modalFileInput.files.length === 0) {
-      alert("Please select at least one file to upload.");
-      return;
+    if (modalFileInput.files.length > 0) {
+      handleBatchFileUpload(modalFileInput.files);
+    } else {
+      showToast("Please choose at least one .md or .txt file", true);
     }
-    handleFileUpload(modalFileInput.files);
   });
 
+  // Drag and drop quick dropzone
   quickDropzone.addEventListener("click", () => dragFileInput.click());
-  dragFileInput.addEventListener("change", (e) => {
-    if (e.target.files.length > 0) {
-      handleFileUpload(e.target.files);
+  dragFileInput.addEventListener("change", () => {
+    if (dragFileInput.files.length > 0) {
+      handleBatchFileUpload(dragFileInput.files);
     }
   });
 
-  quickDropzone.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    quickDropzone.classList.add("dragover");
+  ["dragenter", "dragover"].forEach((eventName) => {
+    quickDropzone.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      quickDropzone.classList.add("dragover");
+    });
   });
 
-  quickDropzone.addEventListener("dragleave", () => {
-    quickDropzone.classList.remove("dragover");
+  ["dragleave", "drop"].forEach((eventName) => {
+    quickDropzone.addEventListener(eventName, (e) => {
+      e.preventDefault();
+      quickDropzone.classList.remove("dragover");
+    });
   });
 
   quickDropzone.addEventListener("drop", (e) => {
-    e.preventDefault();
-    quickDropzone.classList.remove("dragover");
-    if (e.dataTransfer.files.length > 0) {
-      handleFileUpload(e.dataTransfer.files);
+    const dt = e.dataTransfer;
+    if (dt && dt.files.length > 0) {
+      handleBatchFileUpload(dt.files);
     }
   });
 
   // ----------------------------------------------------
-  // Initial Boot
+  // Bootstrap Application Initialization
   // ----------------------------------------------------
   loadUserPersonas();
   loadDocuments();

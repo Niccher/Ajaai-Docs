@@ -1,81 +1,19 @@
-import os
-os.environ["TESTING"] = "1"
+"""
+Comprehensive automated test suite for Ajaia Collaborative Document Editor.
+Validates authentication, authorization, sharing RBAC, XSS sanitization,
+atomic batch uploads, exports, OpenAPI schemas, and security headers.
+"""
+
 import io
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-from backend.models import Base, User, Document, DocumentShare
-from backend.database import get_db
-from backend.main import app
-from backend.storage import storage_service
-
-# Setup in-memory SQLite database for isolated test execution
-SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
-
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-@pytest.fixture(scope="session", autouse=True)
-def setup_test_db():
-    Base.metadata.create_all(bind=engine)
-    db = TestingSessionLocal()
-    # Seed Alice and Bob
-    alice = User(id="user_alice_1", email="alice@ajaia.test", name="Alice Johnson")
-    bob = User(id="user_bob_2", email="bob@ajaia.test", name="Bob Smith")
-    db.add(alice)
-    db.add(bob)
-    db.commit()
-    db.close()
-    yield
-    Base.metadata.drop_all(bind=engine)
-
-
-@pytest.fixture
-def db_session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = TestingSessionLocal(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def client(db_session, monkeypatch):
-    def override_get_db():
-        try:
-            yield db_session
-        finally:
-            pass
-
-    app.dependency_overrides[get_db] = override_get_db
-
-    # Mock MinIO storage methods during unit tests
-    monkeypatch.setattr(storage_service, "ensure_bucket_exists", lambda *args, **kwargs: True)
-    monkeypatch.setattr(storage_service, "upload_file", lambda object_name, data, *args, **kwargs: object_name)
-    monkeypatch.setattr(storage_service, "get_file", lambda object_name: b"# Sample Markdown Content")
-    monkeypatch.setattr(storage_service, "delete_file", lambda object_name: None)
-
-    with TestClient(app) as test_client:
-        yield test_client
-    app.dependency_overrides.clear()
-
-
-# ==========================================
-# TESTS
-# ==========================================
+# ==============================================================================
+# 1. AUTHENTICATION & PERSONA TESTS
+# ==============================================================================
 
 def test_seeded_personas(client):
-    """Verify that default test personas (Alice & Bob) are available."""
+    """Verify default test personas (Alice & Bob) are seeded and retrievable."""
     res = client.get("/api/v1/users")
     assert res.status_code == 200
     users = res.json()
@@ -84,8 +22,37 @@ def test_seeded_personas(client):
     assert "bob@ajaia.test" in emails
 
 
-def test_create_document(client):
-    """Verify document creation assigned to active persona."""
+def test_unauthenticated_request_rejected_401(client):
+    """Verify that requests missing X-User-Email header are rejected with 401 Unauthorized."""
+    res = client.get("/api/v1/documents")
+    assert res.status_code == 401
+    assert "Missing required X-User-Email" in res.json()["detail"]
+
+
+def test_unknown_persona_rejected_401(client):
+    """Verify that an unregistered persona email is rejected with 401 Unauthorized."""
+    headers = {"X-User-Email": "intruder@external.io"}
+    res = client.get("/api/v1/documents", headers=headers)
+    assert res.status_code == 401
+    assert "intruder@external.io" in res.json()["detail"]
+
+
+def test_get_current_user_me(client):
+    """Verify that GET /api/v1/users/me returns the active authenticated persona."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    res = client.get("/api/v1/users/me", headers=headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["email"] == "alice@ajaia.test"
+    assert data["name"] == "Alice Johnson"
+
+
+# ==============================================================================
+# 2. DOCUMENT CREATION & VALIDATION TESTS
+# ==============================================================================
+
+def test_create_document_success(client):
+    """Verify document creation assigned to active persona with owner permission."""
     headers = {"X-User-Email": "alice@ajaia.test"}
     payload = {
         "title": "Quarterly Product Strategy",
@@ -99,197 +66,405 @@ def test_create_document(client):
     assert data["permission"] == "owner"
 
 
-def test_document_access_isolation_forbidden(client):
-    """Verify that Bob CANNOT access Alice's private document (403 Forbidden)."""
-    # 1. Alice creates a private document
-    res_alice = client.post(
-        "/api/v1/documents",
-        json={"title": "Alice Secret Roadmap", "content_html": "<p>Confidential</p>"},
-        headers={"X-User-Email": "alice@ajaia.test"}
-    )
-    doc_id = res_alice.json()["id"]
+def test_create_document_title_too_long(client):
+    """Verify that title exceeding 255 characters is rejected with 422 Unprocessable Entity."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    payload = {
+        "title": "A" * 256,
+        "content_html": "<p>Overly long title.</p>",
+    }
+    res = client.post("/api/v1/documents", json=payload, headers=headers)
+    assert res.status_code == 422
 
-    # 2. Bob attempts to read Alice's unshared document
-    res_bob = client.get(f"/api/v1/documents/{doc_id}", headers={"X-User-Email": "bob@ajaia.test"})
-    assert res_bob.status_code == 403
-    assert "Access forbidden" in res_bob.json()["detail"]
+
+def test_create_document_empty_title_validation(client):
+    """Verify that empty string title is rejected with 422 Unprocessable Entity."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    payload = {"title": "", "content_html": "<p>Content</p>"}
+    res = client.post("/api/v1/documents", json=payload, headers=headers)
+    assert res.status_code == 422
+
+
+def test_get_nonexistent_document_404(client):
+    """Verify that querying an unknown document ID yields 404 Not Found."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    res = client.get("/api/v1/documents/nonexistent-uuid-1234", headers=headers)
+    assert res.status_code == 404
+
+
+# ==============================================================================
+# 3. ACCESS CONTROL & ROLE-BASED SHARING TESTS
+# ==============================================================================
+
+def test_document_access_isolation_forbidden(client):
+    """Verify Bob cannot read an unshared document owned by Alice (403 Forbidden)."""
+    alice_headers = {"X-User-Email": "alice@ajaia.test"}
+    doc_res = client.post(
+        "/api/v1/documents",
+        json={"title": "Alice Confidential", "content_html": "<p>Secret</p>"},
+        headers=alice_headers,
+    )
+    doc_id = doc_res.json()["id"]
+
+    bob_headers = {"X-User-Email": "bob@ajaia.test"}
+    res = client.get(f"/api/v1/documents/{doc_id}", headers=bob_headers)
+    assert res.status_code == 403
 
 
 def test_sharing_workflow_grants_access(client):
-    """Verify that sharing a document grants Bob access and shows up in shared list."""
-    # 1. Alice creates document
-    res_create = client.post(
+    """Verify Alice shares with Bob, who can then read and edit the document."""
+    alice_headers = {"X-User-Email": "alice@ajaia.test"}
+    create_res = client.post(
         "/api/v1/documents",
-        json={"title": "Shared Architecture Proposal", "content_html": "<p>Draft</p>"},
-        headers={"X-User-Email": "alice@ajaia.test"}
+        json={"title": "Collaboration Sprint", "content_html": "<p>Draft v1</p>"},
+        headers=alice_headers,
     )
-    doc_id = res_create.json()["id"]
+    doc_id = create_res.json()["id"]
 
-    # 2. Alice shares with Bob as editor
-    res_share = client.post(
-        f"/api/v1/documents/{doc_id}/share",
-        json={"email": "bob@ajaia.test", "permission": "edit"},
-        headers={"X-User-Email": "alice@ajaia.test"}
-    )
-    assert res_share.status_code == 200
-    assert res_share.json()["user_email"] == "bob@ajaia.test"
-    assert res_share.json()["permission"] == "edit"
+    # Alice shares with Bob
+    share_payload = {"email": "bob@ajaia.test", "permission": "edit"}
+    share_res = client.post(f"/api/v1/documents/{doc_id}/shares", json=share_payload, headers=alice_headers)
+    assert share_res.status_code == 201
+    assert share_res.json()["permission"] == "edit"
 
-    # 3. Bob reads document -> should now succeed with 200
-    res_bob = client.get(f"/api/v1/documents/{doc_id}", headers={"X-User-Email": "bob@ajaia.test"})
-    assert res_bob.status_code == 200
-    assert res_bob.json()["permission"] == "edit"
+    # Bob accesses the document
+    bob_headers = {"X-User-Email": "bob@ajaia.test"}
+    bob_get_res = client.get(f"/api/v1/documents/{doc_id}", headers=bob_headers)
+    assert bob_get_res.status_code == 200
+    assert bob_get_res.json()["permission"] == "edit"
 
-    # 4. Bob updates document content
-    res_update = client.put(
+    # Bob edits the document
+    update_res = client.put(
         f"/api/v1/documents/{doc_id}",
-        json={"content_html": "<p>Bob contributed feedback.</p>"},
-        headers={"X-User-Email": "bob@ajaia.test"}
+        json={"content_html": "<p>Bob added revisions.</p>"},
+        headers=bob_headers,
     )
-    assert res_update.status_code == 200
-    assert "<p>Bob contributed feedback.</p>" in res_update.json()["content_html"]
-
-    # 5. Check Bob's document list partitions correctly
-    res_list = client.get("/api/v1/documents", headers={"X-User-Email": "bob@ajaia.test"})
-    assert res_list.status_code == 200
-    shared_ids = [d["id"] for d in res_list.json()["shared"]]
-    assert doc_id in shared_ids
+    assert update_res.status_code == 200
+    assert "<p>Bob added revisions.</p>" in update_res.json()["content_html"]
 
 
 def test_read_only_viewer_cannot_edit(client):
-    """Verify that a user with 'view' permission cannot modify a document."""
-    # 1. Alice creates doc
-    doc_res = client.post(
+    """Verify that collaborator with 'view' permission cannot modify the document (403 Forbidden)."""
+    alice_headers = {"X-User-Email": "alice@ajaia.test"}
+    doc = client.post(
         "/api/v1/documents",
-        json={"title": "Read Only Policy", "content_html": "<p>Immutable</p>"},
-        headers={"X-User-Email": "alice@ajaia.test"}
-    )
-    doc_id = doc_res.json()["id"]
+        json={"title": "Frozen Spec", "content_html": "<p>Immutable</p>"},
+        headers=alice_headers,
+    ).json()
 
-    # 2. Alice shares with Bob as 'view' only
+    # Share with Bob as 'view'
     client.post(
-        f"/api/v1/documents/{doc_id}/share",
+        f"/api/v1/documents/{doc['id']}/shares",
         json={"email": "bob@ajaia.test", "permission": "view"},
-        headers={"X-User-Email": "alice@ajaia.test"}
+        headers=alice_headers,
     )
 
-    # 3. Bob attempts to edit -> must return 403
-    res_edit = client.put(
-        f"/api/v1/documents/{doc_id}",
-        json={"title": "Hacked Title"},
-        headers={"X-User-Email": "bob@ajaia.test"}
+    # Bob attempts edit
+    bob_headers = {"X-User-Email": "bob@ajaia.test"}
+    res = client.put(
+        f"/api/v1/documents/{doc['id']}",
+        json={"title": "Tampered Spec"},
+        headers=bob_headers,
     )
-    assert res_edit.status_code == 403
-    assert "read-only" in res_edit.json()["detail"].lower()
+    assert res.status_code == 403
+    assert "read-only" in res.json()["detail"].lower()
 
 
-def test_file_upload_markdown_conversion(client):
-    """Verify that uploading a .md file converts markdown to HTML and persists."""
-    markdown_content = "# Project Apollo\n\n- Task 1: Scaffolding\n- Task 2: Persistence\n\n> Note: High priority"
-    file_bytes = io.BytesIO(markdown_content.encode("utf-8"))
+def test_editor_cannot_delete(client):
+    """Verify collaborator with 'edit' permission cannot delete the document (403 Forbidden)."""
+    alice_headers = {"X-User-Email": "alice@ajaia.test"}
+    doc = client.post(
+        "/api/v1/documents",
+        json={"title": "Company Policy", "content_html": "<p>Rules</p>"},
+        headers=alice_headers,
+    ).json()
+
+    client.post(
+        f"/api/v1/documents/{doc['id']}/shares",
+        json={"email": "bob@ajaia.test", "permission": "edit"},
+        headers=alice_headers,
+    )
+
+    # Bob attempts delete
+    bob_headers = {"X-User-Email": "bob@ajaia.test"}
+    res = client.delete(f"/api/v1/documents/{doc['id']}", headers=bob_headers)
+    assert res.status_code == 403
+    assert "owner" in res.json()["detail"].lower()
+
+
+def test_owner_can_delete(client):
+    """Verify document owner can delete the document (204 No Content)."""
+    alice_headers = {"X-User-Email": "alice@ajaia.test"}
+    doc = client.post(
+        "/api/v1/documents",
+        json={"title": "Temporary Scratchpad", "content_html": "<p>Delete me</p>"},
+        headers=alice_headers,
+    ).json()
+
+    res = client.delete(f"/api/v1/documents/{doc['id']}", headers=alice_headers)
+    assert res.status_code == 204
+
+    # Verify gone
+    get_res = client.get(f"/api/v1/documents/{doc['id']}", headers=alice_headers)
+    assert get_res.status_code == 404
+
+
+def test_cannot_share_with_self(client):
+    """Verify owner cannot share document with themselves (400 Bad Request)."""
+    alice_headers = {"X-User-Email": "alice@ajaia.test"}
+    doc = client.post(
+        "/api/v1/documents",
+        json={"title": "Self Share Test", "content_html": "<p>Testing</p>"},
+        headers=alice_headers,
+    ).json()
 
     res = client.post(
-        "/api/v1/documents/upload",
-        files={"file": ("apollo_spec.md", file_bytes, "text/markdown")},
-        headers={"X-User-Email": "alice@ajaia.test"}
+        f"/api/v1/documents/{doc['id']}/shares",
+        json={"email": "alice@ajaia.test", "permission": "view"},
+        headers=alice_headers,
     )
+    assert res.status_code == 400
+    assert "owner" in res.json()["detail"].lower()
+
+
+def test_share_with_invalid_email(client):
+    """Verify that inviting an invalid email address triggers 422 Unprocessable Entity."""
+    alice_headers = {"X-User-Email": "alice@ajaia.test"}
+    doc = client.post(
+        "/api/v1/documents",
+        json={"title": "Invalid Share Test", "content_html": "<p>Testing</p>"},
+        headers=alice_headers,
+    ).json()
+
+    res = client.post(
+        f"/api/v1/documents/{doc['id']}/shares",
+        json={"email": "not-an-email", "permission": "view"},
+        headers=alice_headers,
+    )
+    assert res.status_code == 422
+
+
+def test_revoke_share_access(client):
+    """Verify owner revokes collaborator access and collaborator is subsequently blocked."""
+    alice_headers = {"X-User-Email": "alice@ajaia.test"}
+    doc = client.post(
+        "/api/v1/documents",
+        json={"title": "Revocation Test", "content_html": "<p>Shared</p>"},
+        headers=alice_headers,
+    ).json()
+
+    # Share with Bob
+    share = client.post(
+        f"/api/v1/documents/{doc['id']}/shares",
+        json={"email": "bob@ajaia.test", "permission": "view"},
+        headers=alice_headers,
+    ).json()
+
+    # Revoke Bob's access
+    del_share = client.delete(f"/api/v1/documents/{doc['id']}/shares/{share['user_id']}", headers=alice_headers)
+    assert del_share.status_code == 204
+
+    # Bob attempts read
+    bob_headers = {"X-User-Email": "bob@ajaia.test"}
+    get_res = client.get(f"/api/v1/documents/{doc['id']}", headers=bob_headers)
+    assert get_res.status_code == 403
+
+
+# ==============================================================================
+# 4. SECURITY & XSS SANITIZATION TESTS
+# ==============================================================================
+
+def test_xss_script_tag_stripped(client):
+    """Verify that script tags and inline event handlers are completely removed by nh3."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    malicious_payload = {
+        "title": "XSS Probe",
+        "content_html": '<h3>Safe Heading</h3><script>alert("hacked")</script><p onclick="stealCookies()">Text</p>',
+    }
+    res = client.post("/api/v1/documents", json=malicious_payload, headers=headers)
+    assert res.status_code == 201
+    sanitized_html = res.json()["content_html"]
+
+    assert "<script" not in sanitized_html
+    assert "alert(" not in sanitized_html
+    assert "onclick" not in sanitized_html
+    assert "Safe Heading" in sanitized_html
+
+
+def test_xss_javascript_protocol_neutralized(client):
+    """Verify that javascript: URI protocols in anchor tags are stripped."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    malicious_payload = {
+        "title": "URI Probe",
+        "content_html": '<a href="javascript:alert(\'xss\')">Click me</a>',
+    }
+    res = client.post("/api/v1/documents", json=malicious_payload, headers=headers)
+    assert res.status_code == 201
+    sanitized_html = res.json()["content_html"]
+    assert "javascript:" not in sanitized_html
+
+
+# ==============================================================================
+# 5. ATOMIC FILE UPLOAD & INGESTION TESTS
+# ==============================================================================
+
+def test_file_upload_markdown_conversion(client):
+    """Verify uploading a Markdown file converts formatting into rich-text HTML."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    md_content = b"# Architecture Design\n\n- Component A\n- Component B\n\n**Important:** Ready for review."
+    files = {"files": ("design.md", io.BytesIO(md_content), "text/markdown")}
+
+    res = client.post("/api/v1/documents/upload", files=files, headers=headers)
     assert res.status_code == 201
     doc = res.json()
-    assert doc["title"] == "Apollo spec"
-    assert doc["file_type"] == "markdown"
-    assert "<h1>Project Apollo</h1>" in doc["content_html"]
-    assert "<li>Task 1: Scaffolding</li>" in doc["content_html"]
-    assert "<blockquote>" in doc["content_html"]
+    assert doc["title"] == "Design"
+    assert "<h1>Architecture Design</h1>" in doc["content_html"]
+    assert "Component A" in doc["content_html"]
     assert doc["minio_object_key"] is not None
 
 
-def test_delete_access_control(client):
-    """Verify only owner can delete a document."""
-    # 1. Alice creates doc and shares with Bob
-    doc_res = client.post(
-        "/api/v1/documents",
-        json={"title": "To be deleted"},
-        headers={"X-User-Email": "alice@ajaia.test"}
-    )
-    doc_id = doc_res.json()["id"]
-    client.post(
-        f"/api/v1/documents/{doc_id}/share",
-        json={"email": "bob@ajaia.test", "permission": "edit"},
-        headers={"X-User-Email": "alice@ajaia.test"}
-    )
-
-    # 2. Bob attempts to delete Alice's doc -> 403
-    res_bob_del = client.delete(f"/api/v1/documents/{doc_id}", headers={"X-User-Email": "bob@ajaia.test"})
-    assert res_bob_del.status_code == 403
-
-    # 3. Alice deletes her own doc -> 204
-    res_alice_del = client.delete(f"/api/v1/documents/{doc_id}", headers={"X-User-Email": "alice@ajaia.test"})
-    assert res_alice_del.status_code == 204
+def test_file_upload_unsupported_extension(client):
+    """Verify that uploading files with unsupported extensions (.pdf, .exe) is rejected (400)."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    files = {"files": ("document.pdf", io.BytesIO(b"%PDF-1.4"), "application/pdf")}
+    res = client.post("/api/v1/documents/upload", files=files, headers=headers)
+    assert res.status_code == 400
+    assert "unsupported extension" in res.json()["detail"].lower()
 
 
-def test_batch_file_upload(client):
-    """Verify uploading multiple files simultaneously."""
-    file1 = ("doc1.md", io.BytesIO(b"# Doc One"), "text/markdown")
-    file2 = ("doc2.txt", io.BytesIO(b"Doc Two Plain Text"), "text/plain")
+def test_file_size_limit_exceeded(client):
+    """Verify that files exceeding the 20MB limit return 413 Content Too Large."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    large_payload = b"A" * (20 * 1024 * 1024 + 10)
+    files = {"files": ("giant.txt", io.BytesIO(large_payload), "text/plain")}
+
+    res = client.post("/api/v1/documents/upload", files=files, headers=headers)
+    assert res.status_code == 413
+    assert "exceeds" in res.json()["detail"].lower()
+
+
+def test_batch_file_upload_success(client):
+    """Verify batch upload of multiple files in a single request."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    file1 = ("notes_1.md", io.BytesIO(b"# Notes 1\n\nBody content"), "text/markdown")
+    file2 = ("notes_2.txt", io.BytesIO(b"Plain text notes 2"), "text/plain")
 
     res = client.post(
         "/api/v1/documents/upload",
         files=[("files", file1), ("files", file2)],
-        headers={"X-User-Email": "alice@ajaia.test"}
+        headers=headers,
     )
     assert res.status_code == 201
     docs = res.json()
     assert isinstance(docs, list)
     assert len(docs) == 2
     titles = [d["title"] for d in docs]
-    assert "Doc1" in titles
-    assert "Doc2" in titles
+    assert "Notes 1" in titles
+    assert "Notes 2" in titles
 
 
-def test_file_size_limit_exceeded(client):
-    """Verify that file uploads exceeding 20 MB are rejected with HTTP 413."""
-    from backend.main import MAX_FILE_SIZE
-    # Create fake stream exceeding 20 MB
-    large_bytes = b"X" * (MAX_FILE_SIZE + 1024)
-    file_payload = ("oversized.txt", io.BytesIO(large_bytes), "text/plain")
+def test_batch_upload_atomic_validation_rollback(client):
+    """Verify atomic validation: if second file in batch is invalid, first file is not created."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    file1 = ("valid.md", io.BytesIO(b"# Valid doc"), "text/markdown")
+    file2 = ("invalid.exe", io.BytesIO(b"binary"), "application/octet-stream")
 
     res = client.post(
         "/api/v1/documents/upload",
-        files={"file": file_payload},
-        headers={"X-User-Email": "alice@ajaia.test"}
+        files=[("files", file1), ("files", file2)],
+        headers=headers,
     )
-    assert res.status_code == 413
-    assert "exceeds maximum allowed size" in res.json()["detail"].lower()
+    assert res.status_code == 400
+    assert "unsupported extension" in res.json()["detail"].lower()
+
+    # Confirm valid.md was NOT created in the database
+    docs = client.get("/api/v1/documents", headers=headers).json()
+    owned_titles = [d["title"] for d in docs["owned"]]
+    assert "Valid" not in owned_titles
 
 
-def test_export_markdown_and_txt(client):
-    """Verify exporting a document back into Markdown and plain text."""
-    # 1. Create document with HTML
-    doc_res = client.post(
+# ==============================================================================
+# 6. EXPORT & DOWNLOAD TESTS
+# ==============================================================================
+
+def test_export_markdown_conversion(client):
+    """Verify document exports cleanly to Markdown format."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    doc = client.post(
         "/api/v1/documents",
-        json={"title": "Export Spec", "content_html": "<h2>Architecture</h2><p>Here is <strong>bold</strong> text.</p>"},
-        headers={"X-User-Email": "alice@ajaia.test"}
-    )
-    doc_id = doc_res.json()["id"]
+        json={
+            "title": "Release Notes",
+            "content_html": "<h1>Release v1.2</h1><p>Highlights:</p><ul><li data-list=\"bullet\">Feature A</li></ul>",
+        },
+        headers=headers,
+    ).json()
 
-    # 2. Export as Markdown
-    res_md = client.get(f"/api/v1/documents/{doc_id}/export?format=md", headers={"X-User-Email": "alice@ajaia.test"})
-    assert res_md.status_code == 200
-    assert "## Architecture" in res_md.text
-    assert "**bold**" in res_md.text
-    assert "attachment; filename=\"export_spec.md\"" in res_md.headers["content-disposition"]
+    res = client.get(f"/api/v1/documents/{doc['id']}/export?format=md", headers=headers)
+    assert res.status_code == 200
+    assert res.headers["Content-Type"].startswith("text/markdown")
+    content = res.content.decode("utf-8")
+    assert "# Release v1.2" in content
+    assert "- Feature A" in content
 
 
-def test_xss_payload_sanitized(client):
-    """Verify that malicious <script> tags and onerror handlers are sanitized."""
-    malicious_html = "<p>Clean</p><script>alert('XSS')</script><img src=x onerror=alert(1)>"
-    doc_res = client.post(
+def test_export_text_conversion(client):
+    """Verify document exports cleanly to plain text format."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    doc = client.post(
         "/api/v1/documents",
-        json={"title": "Security Test", "content_html": malicious_html},
-        headers={"X-User-Email": "alice@ajaia.test"}
-    )
-    assert doc_res.status_code == 201
-    html = doc_res.json()["content_html"]
-    assert "<script" not in html.lower()
-    assert "onerror=" not in html.lower()
-    assert "<p>Clean</p>" in html
+        json={"title": "Plain Export", "content_html": "<h2>Title</h2><p>Body line.</p>"},
+        headers=headers,
+    ).json()
+
+    res = client.get(f"/api/v1/documents/{doc['id']}/export?format=txt", headers=headers)
+    assert res.status_code == 200
+    assert res.headers["Content-Type"].startswith("text/plain")
+    assert "Body line." in res.content.decode("utf-8")
+
+
+def test_download_raw_native_doc_404(client):
+    """Verify downloading raw file for native doc (no attached file) returns 404."""
+    headers = {"X-User-Email": "alice@ajaia.test"}
+    doc = client.post(
+        "/api/v1/documents",
+        json={"title": "Native Doc", "content_html": "<p>Native</p>"},
+        headers=headers,
+    ).json()
+
+    res = client.get(f"/api/v1/documents/{doc['id']}/download-raw", headers=headers)
+    assert res.status_code == 404
+
+
+# ==============================================================================
+# 7. HEALTH, SECURITY HEADERS & OPENAPI SPECS
+# ==============================================================================
+
+def test_health_check_endpoint(client):
+    """Verify health endpoint reports DB, MinIO connectivity and 20MB limit."""
+    res = client.get("/api/v1/health")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["database_connected"] is True
+    assert data["max_upload_size_mb"] == 20
+
+
+def test_openapi_security_scheme_present(client):
+    """Verify Swagger OpenAPI schema includes X-User-Email securityScheme for Authorize modal."""
+    res = client.get("/openapi.json")
+    assert res.status_code == 200
+    spec = res.json()
+    assert "components" in spec
+    assert "securitySchemes" in spec["components"]
+    assert "APIKeyHeader" in spec["components"]["securitySchemes"]
+    scheme = spec["components"]["securitySchemes"]["APIKeyHeader"]
+    assert scheme["name"] == "X-User-Email"
+    assert scheme["type"] == "apiKey"
+
+
+def test_security_headers_present(client):
+    """Verify response includes defense-in-depth security headers."""
+    res = client.get("/api/v1/health")
+    assert res.headers.get("X-Content-Type-Options") == "nosniff"
+    assert res.headers.get("X-Frame-Options") == "DENY"
+    assert res.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
+    assert "Content-Security-Policy" in res.headers

@@ -6,11 +6,11 @@
   <title>Ajaia Docs - Collaborative Document Editor</title>
   
   <!-- Bootstrap 5.3 & Bootstrap Icons -->
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" crossorigin="anonymous">
   
   <!-- Quill.js Snow Theme -->
-  <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet" crossorigin="anonymous">
   
   <!-- Google Fonts (Inter) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -48,6 +48,11 @@
 
       <!-- Right Action Items -->
       <div class="d-flex align-items-center gap-2 ms-auto">
+        <!-- API Docs link with Authorize note -->
+        <a href="/docs" target="_blank" class="btn btn-outline-secondary btn-sm d-none d-sm-flex align-items-center gap-1" title="Interactive OpenAPI Swagger Documentation">
+          <i class="bi bi-code-slash"></i> API Docs
+        </a>
+
         <!-- Share Button (Visible when in editor) -->
         <button id="btnOpenShare" class="btn btn-primary btn-sm d-none align-items-center gap-1 shadow-sm px-3" data-bs-toggle="modal" data-bs-target="#shareModal">
           <i class="bi bi-person-plus-fill"></i> Share
@@ -89,97 +94,94 @@
             <i class="bi bi-plus-lg"></i> New Document
           </button>
           <button class="btn btn-outline-primary d-flex align-items-center gap-1 shadow-sm" data-bs-toggle="modal" data-bs-target="#uploadModal">
-            <i class="bi bi-cloud-arrow-up"></i> Import (.md, .txt)
+            <i class="bi bi-cloud-arrow-up"></i> Import Files
           </button>
         </div>
       </div>
 
-      <!-- Quick Upload Banner / Drag-and-drop dropzone -->
-      <div class="card border-dashed mb-4 bg-white p-3 text-center dropzone-box" id="quickDropzone">
-        <div class="card-body py-3">
-          <i class="bi bi-file-earmark-arrow-up text-primary fs-2"></i>
-          <h6 class="fw-semibold mt-2 mb-1">Drag & Drop .md or .txt files here to import</h6>
-          <p class="text-muted small mb-0">Supports batch uploads (up to 20 MB each). Ingested to MinIO S3 and converted to editable rich-text</p>
-          <input type="file" id="dragFileInput" class="d-none" accept=".md,.txt" multiple>
-        </div>
+      <!-- Quick Upload Drop Zone -->
+      <div class="card border-dashed mb-4 bg-white shadow-xs dropzone-container text-center py-4 px-3" id="quickDropzone">
+        <i class="bi bi-file-earmark-arrow-up fs-2 text-primary"></i>
+        <div class="fw-semibold mt-2">Drag and drop Markdown (.md) or text (.txt) files here</div>
+        <div class="small text-muted">Supports multiple files (up to 20MB per file) • Automatically persisted to MinIO S3</div>
+        <input type="file" id="dragFileInput" class="d-none" accept=".md,.txt" multiple>
       </div>
 
-      <!-- Document Tabs (My Documents vs Shared with Me) -->
-      <ul class="nav nav-pills mb-3 gap-2" id="docTabs" role="tablist">
+      <!-- Document Category Tabs -->
+      <ul class="nav nav-pills mb-3 border-bottom pb-2 gap-2" id="docTabs" role="tablist">
         <li class="nav-item" role="presentation">
-          <button class="nav-link active px-4 py-2" id="tab-owned" data-bs-toggle="pill" data-bs-target="#content-owned" type="button" role="tab">
-            <i class="bi bi-folder2-open me-1"></i> My Documents <span class="badge bg-secondary ms-1" id="badgeOwnedCount">0</span>
+          <button class="nav-link active d-flex align-items-center gap-2" id="owned-tab" data-bs-toggle="pill" data-bs-target="#ownedDocsPane" type="button" role="tab">
+            <i class="bi bi-folder-fill"></i> My Documents
+            <span class="badge bg-secondary rounded-pill" id="badgeOwnedCount">0</span>
           </button>
         </li>
         <li class="nav-item" role="presentation">
-          <button class="nav-link px-4 py-2" id="tab-shared" data-bs-toggle="pill" data-bs-target="#content-shared" type="button" role="tab">
-            <i class="bi bi-people me-1"></i> Shared with Me <span class="badge bg-secondary ms-1" id="badgeSharedCount">0</span>
+          <button class="nav-link d-flex align-items-center gap-2" id="shared-tab" data-bs-toggle="pill" data-bs-target="#sharedDocsPane" type="button" role="tab">
+            <i class="bi bi-people-fill"></i> Shared With Me
+            <span class="badge bg-secondary rounded-pill" id="badgeSharedCount">0</span>
           </button>
         </li>
       </ul>
 
-      <div class="tab-content" id="docTabContent">
-        <!-- Owned Documents List -->
-        <div class="tab-pane fade show active" id="content-owned" role="tabpanel">
+      <!-- Tab Content Grids -->
+      <div class="tab-content" id="docTabsContent">
+        <div class="tab-pane fade show active" id="ownedDocsPane" role="tabpanel">
           <div class="row g-3" id="ownedDocsGrid">
-            <div class="col-12 text-center py-5 text-muted">
-              <div class="spinner-border spinner-border-sm text-primary" role="status"></div> Loading documents...
-            </div>
+            <!-- Dynamic Document Cards -->
           </div>
         </div>
-
-        <!-- Shared Documents List -->
-        <div class="tab-pane fade" id="content-shared" role="tabpanel">
+        <div class="tab-pane fade" id="sharedDocsPane" role="tabpanel">
           <div class="row g-3" id="sharedDocsGrid">
-            <div class="col-12 text-center py-5 text-muted">No shared documents.</div>
+            <!-- Dynamic Shared Cards -->
           </div>
         </div>
       </div>
     </div>
 
     <!-- ---------------------------------------------------- -->
-    <!-- VIEW 2: EDITOR VIEW -->
+    <!-- VIEW 2: DOCUMENT EDITOR -->
     <!-- ---------------------------------------------------- -->
     <div id="editorView" class="d-none">
-      
-      <!-- Editor Subheader -->
       <div class="d-flex justify-content-between align-items-center mb-3">
-        <button class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1" id="btnBackToDashboard">
-          <i class="bi bi-arrow-left"></i> Back to Documents
-        </button>
         <div class="d-flex align-items-center gap-2">
-          <span id="docMetaInfo" class="small text-muted"></span>
+          <button class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1" id="btnBackToDashboard">
+            <i class="bi bi-arrow-left"></i> Back to Documents
+          </button>
+          <span class="text-muted small ms-2" id="docMetaInfo">Owner: Alice Johnson • Created just now</span>
+        </div>
 
-          <!-- Export Dropdown (Optional Stretch Feature) -->
+        <div class="d-flex align-items-center gap-2">
+          <!-- Export Dropdown -->
           <div class="dropdown">
-            <button class="btn btn-sm btn-outline-secondary dropdown-toggle d-flex align-items-center gap-1" type="button" id="exportDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-              <i class="bi bi-box-arrow-up-right"></i> Export
+            <button class="btn btn-outline-secondary btn-sm dropdown-toggle d-flex align-items-center gap-1" type="button" id="exportDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-download"></i> Export
             </button>
             <ul class="dropdown-menu dropdown-menu-end shadow-sm" aria-labelledby="exportDropdown">
-              <li><a class="dropdown-item d-flex align-items-center gap-2" href="#" id="btnExportMd"><i class="bi bi-markdown text-primary"></i> Markdown (.md)</a></li>
-              <li><a class="dropdown-item d-flex align-items-center gap-2" href="#" id="btnExportTxt"><i class="bi bi-file-text text-secondary"></i> Plain Text (.txt)</a></li>
-              <li><a class="dropdown-item d-flex align-items-center gap-2" href="#" id="btnExportHtml"><i class="bi bi-filetype-html text-danger"></i> HTML (.html)</a></li>
+              <li><button class="dropdown-item d-flex align-items-center gap-2" id="btnExportMd"><i class="bi bi-markdown"></i> Markdown (.md)</button></li>
+              <li><button class="dropdown-item d-flex align-items-center gap-2" id="btnExportTxt"><i class="bi bi-file-text"></i> Plain Text (.txt)</button></li>
+              <li><button class="dropdown-item d-flex align-items-center gap-2" id="btnExportHtml"><i class="bi bi-code-slash"></i> Raw HTML (.html)</button></li>
               <li><hr class="dropdown-divider"></li>
-              <li><a class="dropdown-item d-flex align-items-center gap-2 d-none" href="#" id="btnDownloadRawLink"><i class="bi bi-cloud-arrow-down text-info"></i> Original File (MinIO)</a></li>
+              <li><a class="dropdown-item d-flex align-items-center gap-2 text-primary" id="btnDownloadRawLink" href="#" target="_blank"><i class="bi bi-cloud-arrow-down"></i> Original File (MinIO)</a></li>
             </ul>
           </div>
 
-          <button id="btnDeleteDoc" class="btn btn-sm btn-outline-danger d-none align-items-center gap-1" title="Delete document">
-            <i class="bi bi-trash"></i>
+          <!-- Delete Document (Owner only) -->
+          <button class="btn btn-outline-danger btn-sm d-none align-items-center gap-1" id="btnDeleteDoc">
+            <i class="bi bi-trash"></i> Delete
           </button>
         </div>
       </div>
 
-      <!-- Editor Card Container (Paper Look) -->
-      <div class="editor-container mx-auto">
-        <!-- Quill Toolbar will mount here -->
-        <div id="quillToolbar" class="bg-white rounded-top border">
+      <!-- Editor Container -->
+      <div class="card shadow-sm border-0 editor-card">
+        <!-- Quill Custom Toolbar -->
+        <div id="quillToolbar" class="border-bottom bg-white rounded-top px-3 py-2">
           <span class="ql-formats">
             <select class="ql-header">
               <option value="1">Heading 1</option>
               <option value="2">Heading 2</option>
               <option value="3">Heading 3</option>
-              <option selected>Normal</option>
+              <option selected>Normal Text</option>
             </select>
           </span>
           <span class="ql-formats">
@@ -200,9 +202,9 @@
             <button class="ql-clean"></button>
           </span>
         </div>
-        
-        <!-- Quill Editor Area -->
-        <div id="quillEditor" class="editor-page bg-white shadow-sm border border-top-0 rounded-bottom"></div>
+
+        <!-- Quill Content Area -->
+        <div id="quillEditor" class="editor-content-area"></div>
       </div>
     </div>
 
@@ -212,63 +214,70 @@
   <!-- MODALS -->
   <!-- ======================================================== -->
 
-  <!-- Share Modal -->
+  <!-- Share Document Modal -->
   <div class="modal fade" id="shareModal" tabindex="-1" aria-labelledby="shareModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content shadow">
         <div class="modal-header">
           <h5 class="modal-title fw-bold" id="shareModalLabel">
-            <i class="bi bi-person-plus text-primary me-2"></i>Share "<span id="shareModalDocTitle">Document</span>"
+            <i class="bi bi-person-plus text-primary me-1"></i> Share Document
           </h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-          <form id="shareForm">
-            <div class="mb-3">
-              <label class="form-label small fw-semibold">Invite Collaborator Email</label>
-              <div class="input-group">
-                <input type="email" id="shareEmailInput" class="form-control" placeholder="e.g. bob@ajaia.test" required>
-                <select id="sharePermissionSelect" class="form-select" style="max-width: 120px;">
-                  <option value="edit">Editor</option>
-                  <option value="view">Viewer</option>
-                </select>
-                <button type="submit" class="btn btn-primary" id="btnSubmitShare">Invite</button>
+          <p class="small text-muted mb-3" id="shareModalDocTitle">Invite collaborators and manage access rights.</p>
+          
+          <form id="shareForm" class="mb-4">
+            <div class="row g-2">
+              <div class="col-7">
+                <input type="email" class="form-control form-control-sm" id="shareEmailInput" placeholder="Collaborator email (e.g. bob@ajaia.test)" required>
               </div>
-              <div class="form-text">Quick select test user: <a href="#" id="quickPickBob">bob@ajaia.test</a> or <a href="#" id="quickPickAlice">alice@ajaia.test</a></div>
+              <div class="col-3">
+                <select class="form-select form-select-sm" id="sharePermissionSelect">
+                  <option value="edit" selected>Can edit</option>
+                  <option value="view">Can view</option>
+                </select>
+              </div>
+              <div class="col-2">
+                <button type="submit" class="btn btn-primary btn-sm w-100">Invite</button>
+              </div>
+            </div>
+            <div class="mt-2 d-flex gap-2">
+              <span class="small text-muted">Quick select:</span>
+              <button type="button" class="btn btn-link btn-xs p-0 text-decoration-none" id="quickPickBob">Bob (bob@ajaia.test)</button>
+              <button type="button" class="btn btn-link btn-xs p-0 text-decoration-none" id="quickPickAlice">Alice (alice@ajaia.test)</button>
             </div>
           </form>
 
-          <hr>
-
-          <h6 class="fw-semibold small text-muted text-uppercase mb-2">People with Access</h6>
-          <div id="shareAccessList" class="list-group list-group-flush">
-            <!-- Populated dynamically -->
+          <h6 class="fw-semibold small text-uppercase text-muted border-bottom pb-1 mb-2">People with Access</h6>
+          <div id="shareAccessList" class="list-group list-group-flush small">
+            <!-- Populated via Javascript -->
           </div>
         </div>
         <div class="modal-footer bg-light py-2">
-          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Done</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- File Upload Modal -->
+  <!-- Upload Modal -->
   <div class="modal fade" id="uploadModal" tabindex="-1" aria-labelledby="uploadModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content shadow">
         <div class="modal-header">
           <h5 class="modal-title fw-bold" id="uploadModalLabel">
-            <i class="bi bi-cloud-arrow-up text-primary me-2"></i>Import Document File
+            <i class="bi bi-cloud-arrow-up text-primary me-1"></i> Import Document Files
           </h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-          <p class="text-muted small">Upload one or multiple <strong>Markdown (.md)</strong> or <strong>Plain Text (.txt)</strong> files (up to 20 MB each). Files are preserved in MinIO S3 and parsed directly into editable rich-text documents.</p>
+          <p class="small text-muted">Select one or more Markdown (.md) or text (.txt) files to ingest. Content will be converted into editable rich-text and stored in MinIO S3 object storage (up to 20MB per file).</p>
           <div class="mb-3">
             <input class="form-control" type="file" id="modalFileInput" accept=".md,.txt" multiple>
           </div>
           <div id="uploadProgress" class="d-none alert alert-info py-2 small">
-            <div class="spinner-border spinner-border-sm me-2"></div> Uploading and parsing file...
+            <div class="spinner-border spinner-border-sm me-2"></div> Uploading and parsing files...
           </div>
         </div>
         <div class="modal-footer bg-light py-2">
@@ -290,8 +299,8 @@
   </div>
 
   <!-- Scripts: Bootstrap, Quill, App Logic -->
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js" crossorigin="anonymous"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>
